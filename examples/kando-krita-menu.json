@@ -1,5 +1,5 @@
 {
-  "__comment": "Example Kando pie menu for Krita. Copy the menu object into ~/.config/kando/menus.json, or rebuild it in Kando's editor. Every node REQUIRES icon and iconTheme - Kando refuses the whole file without them. Trigger it from a pad button: bind the button to an F-key chord in the Drawing Tablet page, then add a command shortcut running: kando --menu \"Krita\". Kando sends physical key codes, so pie slices survive non-Latin keyboard layouts. Alt+1/Alt+3 are custom Krita bindings - adjust to your own shortcuts.",
+  "__comment": "Example Kando pie menu for Krita. Copy the menu object into ~/.config/kando/menus.json, or rebuild it in Kando's editor. Every node REQUIRES icon and iconTheme - Kando refuses the whole file without them. Trigger it from a pad key: give the menu a shortcut in Kando's editor, type the same shortcut into that key's Press or Touch box on Wacom Center's Pad buttons tab, tick its Pie box and click Apply bindings; the menu then opens under the pen. Kando sends physical key codes, so pie slices survive non-Latin keyboard layouts. Alt+1/Alt+3 are custom Krita bindings - adjust to your own shortcuts.",
   "menus": [
     {
       "shortcut": "",

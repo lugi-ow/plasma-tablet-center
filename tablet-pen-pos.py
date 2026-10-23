@@ -28,6 +28,9 @@ def screen_size():
     x11 = C.CDLL("libX11.so.6")
     x11.XOpenDisplay.restype = C.c_void_p
     x11.XOpenDisplay.argtypes = [C.c_char_p]
+    x11.XDefaultScreen.argtypes = [C.c_void_p]            # a Display* passed as an int would be truncated to 32 bits
+    x11.XDisplayWidth.argtypes = [C.c_void_p, C.c_int]    # on a build where the pointer sits above 4 GiB
+    x11.XDisplayHeight.argtypes = [C.c_void_p, C.c_int]
     dpy = x11.XOpenDisplay(None)
     if not dpy:
         return None
@@ -40,7 +43,7 @@ def evdev_pen_norm(devices="/proc/bus/input/devices", dev_dir="/dev/input"):
     """Normalized (0..1) pen position from the kernel. None: no pen node, or no access to it.
     OUT_OF_RANGE: the pen has no evdev position right now. The arguments are for the rig."""
     try:
-        blocks = open(devices).read().split("\n\n")
+        blocks = open(devices, encoding="utf-8", errors="replace").read().split("\n\n")
     except OSError:
         return None
     node = None

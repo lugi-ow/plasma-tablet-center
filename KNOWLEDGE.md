@@ -8,8 +8,10 @@ tablet tooling on Plasma Wayland, read this first.
 **KWin owns the tablet mapping.** Each input device is a D-Bus object under
 `org.kde.KWin /org/kde/KWin/InputDevice/eventN` with writable properties -
 `outputArea` (the mapped screen rectangle, as fractions) is all precision
-mode needs. Event numbers change on every Bluetooth reconnect: never cache
-them, find the device by its `tabletTool` / `tabletPad` property each run.
+mode needs. Event numbers change on every Bluetooth reconnect: a cached
+sysname is good only with a one-call `tabletTool` check on every run (the
+toggle keeps one in `$XDG_RUNTIME_DIR/tabprec/pen`), and a stale one means
+a new walk over the device list by its `tabletTool` / `tabletPad` property.
 
 **KWin keeps every mapping you give it.** Each write to `outputArea` also
 goes into `kcminputrc`, under
@@ -40,10 +42,14 @@ memory, and the file always names the mapping the pen must have with the
 mode off.
 
 Two things make this work, and both were measured on Plasma 6.6 rather than
-assumed. Writing the file does **not** end precision mode: KWin keeps the
-live mapping in memory and consults the file only when a device appears, so
-the pen stays in the rectangle. And KWin does not write its own copy back
-over yours — the value held for 90 seconds with the mode on.
+assumed. Writing the file does **not** end precision mode: the live mapping
+stays in KWin's memory, and KWin applies the saved mapping only when a
+device appears (`applyDeviceConfig` on `DEVICE_ADDED` in its libinput
+backend, read from KWin's own kcminputrc object), so the pen stays in the
+rectangle. And KWin does not write its own copy back over yours — the value
+held for 90 seconds with the mode on. Write with `--notify`, as the toggle
+does: the source read on 2026-10-20 did not settle what refreshes KWin's
+copy of the file, and every hardware test so far used the flag.
 
 Keep the old repair path as a fallback for a KDE that stores the mapping
 somewhere else. If the read-back disagrees, record the rectangle in a file of
@@ -106,9 +112,11 @@ reported yet: `EVIOCGABS` returns the minimum on both axes with
 `BTN_TOOL_PEN` clear (`EVIOCGKEY`). Taken as a position, it put the
 precision area, the ghost and the mouse warp in the top-left corner (seen on
 the hardware, 2026-09-12); both readers now treat that state as no position
-at all (`OUT_OF_RANGE`) and fall back to the mouse. Find the pen node by
-that same key bit in `/proc/bus/input/devices`, never by a name substring: "pen" is also in
-"Suspend".
+at all (`OUT_OF_RANGE`) and fall back to the mouse. `tablet-pen-pos.py`
+finds the pen node by that same key bit in `/proc/bus/input/devices`,
+never by a bare name substring: "pen" is also in "Suspend". (The daemon's
+own reader matches the end of a Wacom device name, `Pen"`, which that
+trap does not reach.)
 
 **The mouse pointer and the pen cursor are two different things.** KWin
 keeps a pointer position for the mouse and a separate cursor for the
@@ -116,7 +124,8 @@ tablet. Everything that asks the compositor for "the pointer" gets the
 mouse: `workspace.cursorPos` in KWin scripts, and Kando's KWin backend,
 which uses that same call. A pie opened from a pad button lands where the
 mouse was last left. The fix is to move the mouse onto the pen first. The
-logged-in user may write `/dev/uinput` on Kubuntu (udev tags it `uaccess`),
+logged-in user may write `/dev/uinput` once a udev rule tags it `uaccess`
+(the install prints one; on the development box Steam's rule had already done it),
 so `tablet-pointer-warp.py` creates a virtual absolute mouse, sends one
 motion, and removes it again, all in about 150 ms - no root, no portal
 dialog. libinput maps the motion as a fraction of the axis range, so the

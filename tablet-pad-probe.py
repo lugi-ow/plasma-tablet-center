@@ -25,7 +25,7 @@ def wacom_nodes():
         return found
     for name in names:
         try:
-            uevent = open(f"{base}/{name}/device/uevent").read()
+            uevent = open(f"{base}/{name}/device/uevent", encoding="utf-8", errors="replace").read()
         except OSError:
             continue
         fields = dict(line.split("=", 1) for line in uevent.splitlines() if "=" in line)

@@ -26,6 +26,8 @@ PROFILES_INI = DATA / "profiles.ini"
 TOGGLE = Path.home() / ".local/bin/tablet-precision.sh"
 TOGGLE_COMPONENT = "net.local.tabprec-toggle.desktop"
 TOGGLE_FALLBACK = "Meta+Shift+F12"
+DAEMON_DOWN = ("The pad helper is not running. Restart it: "
+               "systemctl --user restart 'app-tablet\\x2dhover@autostart.service'")
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 NUM_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 CURVE_RE = re.compile(r"^([0-9.]+,[0-9.]+;){2}$")
@@ -527,7 +529,7 @@ def _as_float(text):
 
 # ── chunk: _validate_pad_or_pen
 def _validate_pad_or_pen(value, label):
-    if value in ("", "Disabled"):
+    if value in ("", "Disabled", "Scroll"):      # Scroll: KDE's "act as a scroll wheel", written by its KCM
         return value, None
     if re.fullmatch(r"Key,[^,\x00-\x1f\x7f]+", value):
         seq = value.split(",", 1)[1]
@@ -558,13 +560,19 @@ def _validate_curve(value):
 
 # ── chunk: _validate_range
 def _validate_range(minv, maxv):
+    """Dot-decimal numbers in 0-1 with min < max. A comma decimal is read AND
+    returned as a dot: the value goes to kwriteconfig6 and busctl as given,
+    where "0,5" is no number."""
     if not minv and not maxv:
         return "", "", None
-    a = _as_float(minv) if minv else 0.0
-    b = _as_float(maxv) if maxv else 1.0
-    if a is None or b is None or not (0 <= a <= 1) or not (0 <= b <= 1) or not (a < b):
+    minv, maxv = minv.replace(",", "."), maxv.replace(",", ".")
+    if any(v and not NUM_RE.fullmatch(v) for v in (minv, maxv)):
         return "", "", "the pressure range is invalid, reset to defaults"
-    return (minv if minv else ""), (maxv if maxv else ""), None
+    a = float(minv) if minv else 0.0
+    b = float(maxv) if maxv else 1.0
+    if not (0 <= a <= 1) or not (0 <= b <= 1) or not (a < b):
+        return "", "", "the pressure range is invalid, reset to defaults"
+    return minv, maxv, None
 
 
 # ── chunk: _validate_png
@@ -586,13 +594,14 @@ def _validate_png(value):
 
 
 # ── chunk: _apply_pie_rule
-def _apply_pie_rule(sections, warnings, parse_chord):
-    """A CHORD_n (always a pie) or a TOUCH_CHORD_n that is ALSO a full chord
-    (need_key=True - a plain touch chord like bare "Shift" for a sculpt mode
-    is not a pie and never disables its key) -> [Pad] key n-1 becomes
-    Disabled, with a warning when it was not. On the key of HOVER_MASK: the
-    chord entries themselves are dropped and warned instead - that pad key's
-    own binding stays untouched."""
+def _apply_pie_rule(sections, warnings):
+    """Two rules. A CHORD_n (always a press pie) -> [Pad] key n-1 becomes
+    Disabled, with a warning when it was not: the daemon presses the chord,
+    KWin must swallow the key. A TOUCH_CHORD_n never changes its key: a
+    touch pie is Disabled + the chord as the Pad tab wrote it, and a touch
+    chord on a key that keeps its own press is just as valid. On the key of
+    HOVER_MASK both entries are dropped and warned instead (the daemon never
+    fires a chord there); that pad key's own binding stays untouched."""
     conf, pad = sections["Conf"], sections["Pad"]
     hover_idx = None
     mask = conf.get("HOVER_MASK", "")
@@ -607,19 +616,14 @@ def _apply_pie_rule(sections, warnings, parse_chord):
             pass
     for n in range(1, 9):
         idx = n - 1
-        touch_value = conf.get(f"TOUCH_CHORD_{n}", "")
-        is_pie = bool(conf.get(f"CHORD_{n}")) or (
-            bool(touch_value) and parse_chord and parse_chord(touch_value, True) is not None)
-        if not is_pie:
-            continue
+        has_press, has_touch = bool(conf.get(f"CHORD_{n}")), bool(conf.get(f"TOUCH_CHORD_{n}"))
         if idx == hover_idx:
-            for k in (f"CHORD_{n}", f"TOUCH_CHORD_{n}"):
-                if conf.get(k):
-                    conf[k] = ""
-            warnings.append(f"key {n}: a pie chord on the precision key is dropped, "
-                            "that key's own binding stays untouched")
+            if has_press or has_touch:
+                conf[f"CHORD_{n}"] = conf[f"TOUCH_CHORD_{n}"] = ""
+                warnings.append(f"key {n}: a chord on the precision key is dropped, "
+                                "that key's own binding stays untouched")
             continue
-        if pad.get(str(idx), "") != "Disabled":
+        if has_press and pad.get(str(idx), "") != "Disabled":
             warnings.append(f"Pad key {n}: has a pie chord, forced to Disabled")
             pad[str(idx)] = "Disabled"
     if hover_idx is not None:
@@ -692,7 +696,7 @@ def read_profile(path):
         if key.startswith("CHORD_") or key.startswith("TOUCH_CHORD_"):
             # CHORD_n is always a press pie (needs a full chord); TOUCH_CHORD_n also
             # covers a plain touch chord (bare modifiers allowed, "Shift" for a sculpt
-            # mode) - _apply_pie_rule below re-checks need_key=True to tell the two apart.
+            # mode) and never changes its key (_apply_pie_rule below).
             need_key = key.startswith("CHORD_")
             cleaned = re.sub(r"\s*\+\s*", "+", value.strip())
             ok = parse_chord(cleaned, need_key) is not None if parse_chord else True
@@ -729,7 +733,8 @@ def read_profile(path):
             warnings.append(warn)
     for key in SECTION_KEYS["Ring"]:
         value = sections["Ring"][key]
-        if value and not re.fullmatch(r"AxisKey,[^,\x00-\x1f\x7f]+,[^,\x00-\x1f\x7f]+,\d+", value):
+        if value and value not in ("Scroll", "Disabled") \
+                and not re.fullmatch(r"AxisKey,[^,\x00-\x1f\x7f]+,[^,\x00-\x1f\x7f]+,\d+", value):
             warnings.append(f"Ring mode {key}: {value!r} is invalid, dropped")
             sections["Ring"][key] = ""
 
@@ -749,7 +754,7 @@ def read_profile(path):
         warnings.append(warn)
     sections["Image"]["png"] = png
 
-    _apply_pie_rule(sections, warnings, parse_chord)
+    _apply_pie_rule(sections, warnings)
     return sections, warnings
 
 
@@ -910,8 +915,7 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
     except TimeoutError as err:
         raise SwitchStopped(5, str(err)) from err
     if not poke_daemon():
-        note("The pad helper is not running. Restart it: "
-             "systemctl --user restart 'app-tablet\\x2dhover@autostart.service'")
+        note(DAEMON_DOWN)
     time.sleep(0.3)
 
     if pad:

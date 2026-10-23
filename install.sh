@@ -1,6 +1,6 @@
 #!/bin/bash
 # install.sh - deploy plasma-wacom-center for the current user; safe to re-run. No root for the deploy itself:
-# one udev rule (printed at the end) needs sudo - it covers the pen position and the express keys' touch sense.
+# one udev rule (printed at the end) needs sudo - the pen position, the express keys' touch sense, /dev/uinput for the pies.
 set -e
 cd "$(dirname "$0")"
 BIN="$HOME/.local/bin"
@@ -78,17 +78,19 @@ for n in $(busctl --user get-property org.kde.KWin /org/kde/KWin/InputDevice \
 done
 if [ -n "$pad" ]; then
     printf 'Bind the touch ring of "%s" (mode 1) to the size control? [y/N] ' "$pad"
-    read -r yn
+    read -r yn || yn=""        # stdin at EOF (a piped run) must not end the script under set -e
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-        kwriteconfig6 --notify --file kcminputrc --group ButtonRebinds \
+        if kwriteconfig6 --notify --file kcminputrc --group ButtonRebinds \
             --group TabletRing --group "$pad" --group 0 --key 0 \
-            "AxisKey,Meta+Shift+F10,Meta+Shift+F9,600"
-        echo "Ring bound: one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step and the angle in Wacom Center."
+            "AxisKey,Meta+Shift+F10,Meta+Shift+F9,600"; then
+            echo "Ring bound: one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step and the angle in Wacom Center."
+        else
+            echo "Could not write the ring binding - bind it in Wacom Center (Pad buttons tab, the ring rows)."
+        fi
     fi
 else
     echo "No tablet pad detected (tablet asleep?). Re-run later for the ring."
 fi
-qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
 
 echo "== 5/5 Manual steps that need you"
 QML=$(python3 -c 'import PyQt6.QtQuick; from PyQt6.QtCore import QLibraryInfo as L; print(L.path(L.LibraryPath.QmlImportsPath))' 2>/dev/null) || QML=""
@@ -104,9 +106,10 @@ fi
 cat <<'EOF'
 
 A. One permission rule (one sudo, once). It lets the scripts read the pen's
-   position and, on Wacom tablets, the express keys' touch sense:
+   position, on Wacom tablets the express keys' touch sense, and the
+   virtual mouse that opens a pie under the pen (/dev/uinput):
 
-   printf '%s\n' 'SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Pen*", TAG+="uaccess"' 'KERNEL=="hidraw*", KERNELS=="0003:056A:*|0005:056A:*", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/70-tablet-access.rules && sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+   printf '%s\n' 'SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Pen*", TAG+="uaccess"' 'KERNEL=="hidraw*", KERNELS=="0003:056A:*|0005:056A:*", TAG+="uaccess"' 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/70-tablet-access.rules && sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input --subsystem-match=hidraw --subsystem-match=misc
 
    Without it, precision mode centres on the mouse cursor instead of the
    pen, and the touch preview stays off.

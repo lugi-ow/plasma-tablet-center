@@ -4,13 +4,18 @@
 # call to $STUB_LOG. Like KWin, it keeps outputArea per product when
 # $STUB_AREAS is set - one file per product, $STUB_PRODUCT (default 864 =
 # Bluetooth; 855 = USB) - so a pen that changes bus comes back mapped the
-# way it was left. Without $STUB_AREAS every read says 0 0 1 1.
+# way it was left, and like KWin it writes every mapping it is given into
+# the scratch kcminputrc at once (the toggle's unpersist must undo exactly
+# that; without this write the write-back rig passed with unpersist gone).
+# Without $STUB_AREAS every read says 0 0 1 1.
 # $STUB_NO_PEN lists no pen at all (the tablet is gone).
 echo "busctl $*" >> "${STUB_LOG:-/dev/stderr}"
 PRODUCT=${STUB_PRODUCT:-864}
 KEPT="${STUB_AREAS:+$STUB_AREAS/area-$PRODUCT}"
 if [ "$2" = "set-property" ] && [ "$6" = outputArea ] && [ -n "$KEPT" ]; then
     mkdir -p "$STUB_AREAS" && echo "$8 $9 ${10} ${11}" > "$KEPT"
+    kwriteconfig6 --notify --file kcminputrc --group Libinput --group 1386 --group "$PRODUCT" \
+        --group "Wacom Intuos Pro M Pen" --key OutputArea "$8,$9,${10},${11}" 2>/dev/null
 elif [ "$2" = "get-property" ]; then
     for prop in "${@:6}"; do
         case "$prop" in

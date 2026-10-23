@@ -58,7 +58,7 @@ def read_conf():
                 elif key.strip() == "SCALE_MAX":
                     hi = float(val)
                 elif key.strip() == "DIM":
-                    dim = max(0.0, min(0.8, float(val)))
+                    dim = max(0.0, min(1.0, float(val)))
             except ValueError:
                 pass
     except OSError:

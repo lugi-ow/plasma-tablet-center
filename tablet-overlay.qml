@@ -1,18 +1,9 @@
+// tablet-overlay.qml - the one drawing behind every overlay: dim bands around a clear rectangle, a 2 px amber border inside it (solid = precision mode, dashes flowing clockwise = a preview).
+// Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import QtQuick
 import QtQuick.Window
 import QtQuick.Shapes
 import org.kde.layershell 1.0 as LayerShell
-
-// The one drawing behind every overlay of the toolkit: precision mode itself,
-// the preview ghost (a finger resting on the precision key), the size preview
-// (a ring tick outside the mode) and the PrM ghost (the area being dragged).
-// Dim bands around a clear rectangle and a 2 px amber border drawn INSIDE
-// it, so it never crosses the screen edge. `waiting` turns the border into
-// short dashes that flow clockwise: this rectangle is a preview, waiting to
-// be activated. `shown` false fades everything out (the size preview fades
-// before it quits). The loaders (tablet-overlay.py, tablet-size-preview.py)
-// set the properties from Python with root.setProperty; nothing is read from
-// a context.
 
 // ── chunk: overlay-window
 Window {
@@ -31,11 +22,13 @@ Window {
     LayerShell.Window.exclusionZone: -1
     LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityNone
 
+    // The loaders (tablet-overlay.py, tablet-size-preview.py) set these from Python with root.setProperty;
+    // nothing is read from a context. `shown` false fades everything out (the size preview fades before it quits).
     property int px: 0             // the clear rectangle, in pixels
     property int py: 0
     property int pw: 100
     property int ph: 66
-    property real dimval: 0.35     // alpha of the bands outside it
+    property real dimval: 0.10     // alpha of the bands outside it; the conf's DIM default
     property bool waiting: false   // true: dashed border flowing clockwise (a preview)
     property bool shown: true      // false: fade out over 450 ms
     property real phase: 0         // dash offset in pen widths; the animation drives it while waiting

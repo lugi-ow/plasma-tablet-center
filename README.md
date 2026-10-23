@@ -4,14 +4,15 @@ Precision mode for drawing tablets on KDE Plasma 6 (Wayland), like the one
 in Wacom's own driver on Windows. It comes with a pie menu that opens under
 the pen and a small settings window.
 
-Wacom has no Linux driver. Plasma's Drawing Tablet page sets the mapping,
+Wacom's own settings app is for Windows and macOS only. Plasma's Drawing Tablet page sets the mapping,
 the pressure curve and the buttons, but it has no precision mode. This
 project adds it with a few small scripts. There is nothing to compile.
 
 Built and tested on Kubuntu 26.04 with Plasma 6.6 and a Wacom Intuos Pro M
 over Bluetooth. Any tablet that Plasma's Drawing Tablet page recognizes
-works. The touch preview and the area drag need a Wacom tablet with
-touch-sensitive pad keys (Intuos Pro, Cintiq Pro, MobileStudio Pro).
+works. The touch preview, the area drag and the pie menu under the pen
+need a Wacom tablet with touch-sensitive pad keys (Intuos Pro, Cintiq Pro,
+MobileStudio Pro).
 
 ## What it does
 
@@ -81,7 +82,7 @@ sudo apt install python3-pyqt6 python3-pyqt6.qtquick qml6-module-org-kde-layersh
 
 2. Run the `sudo` command the installer prints. It adds one permission
    rule, so the scripts can read the pen position and the touch sense of
-   the pad keys.
+   the pad keys, and so the pie menus can open under the pen.
 
 3. Open Wacom Center from the application menu, then the Pad buttons tab.
 
@@ -94,6 +95,28 @@ sudo apt install python3-pyqt6 python3-pyqt6.qtquick qml6-module-org-kde-layersh
 
 Bind pad keys to F-keys and modifiers only. A letter does not work while a
 non-Latin keyboard layout is active.
+
+## Update
+
+1. Close Wacom Center if it is open.
+
+2. In the folder you cloned, run:
+
+   ```
+   git pull
+   ./install.sh
+   ```
+
+   The installer replaces the scripts in place. Your settings and your
+   profiles stay.
+
+3. Restart the pad helper, so it runs the new code:
+
+   ```
+   systemctl --user restart 'app-tablet\x2dhover@autostart.service'
+   ```
+
+   Or log out and log in again. That restarts the helper too.
 
 ## The precision key
 
@@ -149,9 +172,10 @@ tab. Type a shortcut, leave the box empty, or type "Disabled". Pen
 button 3 needs both of the pen's side buttons pressed together, and it
 only works over a USB connection. Some pens have no third button.
 
-A box already set in System Settings turns read-only, with a note that
-tells you where to change it. Wacom Center never clears a binding it
-did not set.
+A box that holds a mouse-button binding from System Settings turns
+read-only, with a note that tells you where to change it. A keyboard
+shortcut set there shows as a normal box you can edit. Wacom Center
+never clears a binding it did not set.
 
 The pressure curve is a small graph with two handles you drag, like
 the one in System Settings' Drawing Tablet page. Four number fields
@@ -214,19 +238,27 @@ a shortcut made of F-keys and modifiers, and use each one once.
 - Keep the tablet mapped to the full screen in System Settings. With a
   custom mapping, precision mode still turns off correctly, but the area
   can land away from the cursor.
-- Right after the tablet connects, the toolkit does not know where the pen
-  is until you hover the pen over the tablet. If you turn precision mode on
-  before that, the area lands around the mouse pointer.
-- The touch preview, the touch chords and the area drag need pad keys with
-  a touch sensor (Wacom Intuos Pro, Cintiq Pro, MobileStudio Pro). On other
-  tablets the toggle, the ring and the pie menu still work.
+- The toolkit knows where the pen is only while the pen is near the
+  tablet. If you turn precision mode on with the pen lifted away, the area
+  lands around the mouse pointer. The touch preview does the same.
+- The touch preview, the touch chords, the area drag and the pie keys need
+  pad keys with a touch sensor (Wacom Intuos Pro, Cintiq Pro, MobileStudio
+  Pro): the helper that opens a pie reads the keys through that sensor. On
+  other tablets the toggle and the ring still work. For a pie there, type
+  the menu's shortcut into the key's Press box and leave its Pie box
+  unticked. The menu then opens at the mouse pointer, not under the pen.
+- Left-handed mode (the tablet turned around) is not supported. With it
+  on, the area, the previews and the pie menu land on the opposite side
+  of the screen.
 - A pen click does not move the focus to another window. This is a Plasma
   6.6 bug (KDE bug 498386), not something this project can fix.
+- If the pen reaches only a small part of the screen after an uninstall
+  or a crash, [the rescue steps](RESCUE.txt) put it back.
 
 ## Uninstall
 
-If you want the pad keys back to plain chords, clear them in Wacom
-Center first (untick the Pie and Precision boxes, set the chords you
+If you want the pad keys back to plain shortcuts, clear them in Wacom
+Center first (untick the Pie and Precision boxes, set the shortcuts you
 want, Apply). Then run, from the folder you cloned this repository
 into:
 
@@ -247,7 +279,7 @@ path and the one `sudo` line that removes the permission rule from
 the cloned folder, clone it again for the script — or remove the files
 from the folders above by hand.
 
-[After uninstall, the tablet is mapping to a small area (precision mode) - a simple rescue procedure.](RESCUE.txt)
+[If the pen stays in a small area: the rescue steps](RESCUE.txt)
 
 ## For contributors and AI agents
 
@@ -257,7 +289,7 @@ from the folders above by hand.
   chunk marker (`# ── chunk: <name>`), so you can grep instead of read.
 - `KNOWLEDGE.md` holds the facts behind the design. Each one cost a
   debugging session.
-- `tests/run_all.sh` runs every gate in about a minute, without a tablet.
+- `tests/run_all.sh` runs every gate in about 85 seconds, without a tablet.
 
 ## License
 

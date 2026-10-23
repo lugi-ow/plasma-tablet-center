@@ -10,7 +10,7 @@ September 2026.
 
 | File | Role |
 |---|---|
-| `tablet-precision.sh` | the toggle, and the only writer of the pen mapping. Modes: `toggle`, `resize`, `where`, `suspend`, `resume` |
+| `tablet-precision.sh` | the toggle, and the only writer of the pen mapping. Modes: `toggle`, `resize`, `where`, `suspend`, `resume`, `heal`, `pause`; any other word exits 2 |
 | `tablet-pen-pos.py` | the pen position on the screen, in pixels |
 | `tablet-overlay.py` + `tablet-overlay.qml` | the dim overlay. One drawing for every rectangle the toolkit shows |
 | `tablet-hover.py` | the ExpressKey daemon: the touch preview, the touch chords, the pie chords, the area drag, the long press |
@@ -24,6 +24,12 @@ September 2026.
 
 No compiled code, no kernel module. One daemon (`tablet-hover.py`), started
 by an autostart entry. Everything else is one process per key press.
+
+An update (`install.sh` run again) replaces the scripts in place. The daemon
+keeps its old code until a login or
+`systemctl --user restart 'app-tablet\x2dhover@autostart.service'`, though
+the scripts it starts are the new ones at once; an open Wacom Center window
+keeps its old code until it is closed.
 
 ## Precision mode
 
@@ -56,7 +62,9 @@ key when the base is the whole screen. It then reads the value back to prove
 the write landed. The precision rectangle exists only in KWin's memory and
 in `$XDG_RUNTIME_DIR/tabprec/`, both of which die with the session, so an
 unplug, a bus switch, a logout, a crash or an uninstall all leave the pen on
-its normal mapping with nothing to repair.
+its normal mapping with nothing to repair. If a rectangle ever does stay
+behind (an older version, or a settings file the toggle could not write),
+`RESCUE.txt` removes it by hand.
 
 Measured on Plasma 6.6 on 2026-09-12: with precision mode on, `kcminputrc`
 read `0,0,1,1` while KWin's live `outputArea` read the rectangle, for 90
@@ -140,7 +148,8 @@ tablet appears, the node reports the minimum on both axes until the pen first
 comes into proximity. With `BTN_TOOL_PEN` clear as well, that is no position:
 `tablet-pen-pos.py` exits 1 at once and the toggle uses the mouse. XWayland is
 not asked, because its stylus data is older. The daemon's own reader applies
-the same rule, so the ghost and the mouse warp wait for the first hover.
+the same rule, so the ghost and the mouse warp need the pen in proximity. A
+pen lifted away has no position at all, not only right after a connect.
 
 Evdev gives the position on the TABLET. It is the position on the screen
 only while the whole tablet is mapped to the whole screen, which is not
@@ -245,7 +254,12 @@ precision mode the pen position goes through the area's fractions from the
 area file; during a drag the base mapping is back and the plain position
 is right. Without `/dev/uinput` or KWin the daemon says so in the journal
 and tries again every 30 s. `WARP=0` in the conf switches the warp off
-(chords still fire).
+(chords still fire). A Pie tick works only on a pad whose raw reports the
+daemon decodes (the models under "Report layouts" below, or a probed one):
+the daemon sees the key through the hidraw node, and KWin holds the key
+`Disabled`. On another tablet leave the tick off; the chord in the Press
+box then goes through KWin's own rebinding, and the menu opens at the
+mouse pointer.
 
 `examples/kando-krita-menu.json` is a Kando menu file with a Krita menu
 to start from.
@@ -255,10 +269,15 @@ debugging) creates the virtual mouse, sends one motion as a fraction of
 the axis range, holds 50 ms and removes it. A warp sends two frames, the
 first one unit off: the kernel drops an ABS value equal to the axis's
 current one, so a second warp to the same spot would otherwise be lost.
-Everything here needs write access to `/dev/uinput`. Kubuntu tags the
-node `uaccess` for the logged-in user. Elsewhere, add a udev rule:
+Everything here needs write access to `/dev/uinput`. The udev rule the
+install prints tags the node `uaccess` for the logged-in user (on the
+development box Steam's own rule had already done so, which hid the need
+for a while):
 
-    KERNEL=="uinput", TAG+="uaccess"
+    KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"
+
+That tag lets any program of the logged-in user send input events, the
+same grant Steam's `steam-devices` package makes.
 
 ## Pen
 
@@ -274,11 +293,12 @@ Bluetooth report for this tablet family has no bit for the combined
 press, so the button does nothing there. A pen with no third button
 still shows the box, and the box simply never fires.
 
-A box that already holds a binding set outside Wacom Center, in
-System Settings' Drawing Tablet page, shows read-only with the
-tooltip "Set in System Settings > Drawing Tablet." Wacom Center reads
-the binding to display it, and never writes over a binding it does
-not own.
+A box that holds a mouse-button or scroll binding set outside Wacom
+Center, in System Settings' Drawing Tablet page (any form but a
+keyboard shortcut), shows read-only with the tooltip "Set in System
+Settings > Drawing Tablet." Wacom Center reads the binding to display
+it, and never writes over a binding it does not own. A keyboard
+shortcut set there is an ordinary box you can edit.
 
 ### Pressure curve and range
 
@@ -294,7 +314,9 @@ handles back to the diagonal, which is no curve at all.
 The pressure range is two more fields, minimum and maximum, also 0.00
 to 1.00. They stay enabled even when the pen has not yet reported its
 pressure capability to the system. A note in the tab says so, and the
-range applies once the pen reports.
+range applies once the pen reports. When the minimum is not below the
+maximum, Apply shows a warning and writes the two values as they are. A
+profile that holds such a range loads with the full range, 0.00 to 1.00.
 
 "Apply" writes the pen buttons and the pressure settings together. If
 the pen is not connected, the tab keeps every field editable and
@@ -486,9 +508,12 @@ their timing.
 ## Settings reference
 
 The conf is `~/.config/tabprec.conf`. Every writer keeps the lines it does
-not own. The daemon re-reads it when a line arrives on its control pipe -
-Wacom Center pokes `$XDG_RUNTIME_DIR/tabprec/hover.ctl` on every Apply and
-delay change. After a hand edit, poke it yourself:
+not own. The daemon re-reads it when a line arrives on its control pipe.
+Wacom Center pokes `$XDG_RUNTIME_DIR/tabprec/hover.ctl` after an Apply, a
+touch-register change and a long-press change, the keys the daemon reads;
+the size, dim, reconnect and ring-step saves do not poke, because the toggle
+and the ring read the conf on every run, and a poke releases every held
+chord. After a hand edit, poke it yourself:
 
     echo reload > "$XDG_RUNTIME_DIR/tabprec/hover.ctl"
 
@@ -497,12 +522,13 @@ The toggle reads the conf on every run and needs no poke.
 | Key | Meaning | Default | Written by |
 |---|---|---|---|
 | `SCALE` | area width as a fraction of the screen width, held inside the two limits below | 0.36 | Wacom Center, the ring |
-| `SCALE_MIN`, `SCALE_MAX` | the smallest and the largest `SCALE` the toggle, the ring and the size slider allow; 0 = no limit on that side (the area still ends at the full screen width and at one pixel) | 0.05, 0.80 | Wacom Center |
-| `DIM` | dim strength outside the area, 0 to 0.8 | 0.10 | Wacom Center |
+| `SCALE_MIN`, `SCALE_MAX` | the smallest and the largest `SCALE` the toggle, the ring and the size slider allow; 0 = no limit on that side (the area still ends at the full screen width and at one pixel); a smallest above the largest: the smallest wins, and Wacom Center shows a warning | 0.05, 0.80 | Wacom Center |
+| `DIM` | dim strength outside the area, 0 to 1 (1 = black) | 0.10 | Wacom Center |
 | `HOLD` | the default touch register: seconds a resting finger waits before its touch action when the key has no `TOUCH_HOLD_<n>`, 0 = at once | 0.15 | you (a hand edit; the tab writes per-key values) |
 | `TOUCH_HOLD_<n>` | key n's own touch register | `HOLD` | Wacom Center (the Touch register column) |
 | `LONG` | seconds a press that confirmed a drag stays down to leave the mode, 0 = never | 0.7 | Wacom Center |
-| `RING_STEP` | percentage points of screen width per ring tick | 0.5 | Wacom Center |
+| `RECONNECT` | seconds a paused mode waits for the tablet to come back, 0 = never | 60 | Wacom Center |
+| `RING_STEP` | percentage points of screen width per ring tick; 0 or absent = 0.5 | 0.5 | Wacom Center |
 | `HOVER_MASK` | the precision key's bit | none | Wacom Center (the Precision column) |
 | `CHORD_<n>` | the chord the daemon presses after the warp when pad key n goes down (a pie key; the key is `Disabled` in kcminputrc) | none | Wacom Center (a ticked Pie key) |
 | `TOUCH_CHORD_<n>` | the chord held while a finger rests on key n (see "Touch chords") | none | Wacom Center (the Touch box) |
@@ -544,10 +570,13 @@ The udev rule `install.sh` prints (`/etc/udev/rules.d/70-tablet-access.rules`):
 
     SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Pen*", TAG+="uaccess"
     KERNEL=="hidraw*", KERNELS=="0003:056A:*|0005:056A:*", TAG+="uaccess"
+    KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"
 
 The first line gives the pen position (evdev). The second gives the touch
-sense (hidraw). Without the rule, precision mode centres on the mouse and
-the daemon idles.
+sense (hidraw). The third lets the daemon create the virtual device that
+warps the mouse and presses the pie chords (`/dev/uinput`). Without the
+rule, precision mode centres on the mouse, the daemon idles, and no pie
+opens under the pen.
 
 Runtime files live in `$XDG_RUNTIME_DIR/tabprec/`. The pen ledgers live in
 `~/.local/state/tabprec/`, because they must outlive a logout.
@@ -564,8 +593,9 @@ Runtime files live in `$XDG_RUNTIME_DIR/tabprec/`. The pen ledgers live in
 - Base mapping. The placement assumes the default full-tablet stretch.
   Toggle-off restores a letterboxed mapping from the Display page
   correctly, but the cursor-stationary placement drifts.
-- A tablet that has just appeared. Until the pen first hovers, there is no
-  pen position, and a toggle places the area around the mouse pointer.
+- A pen out of proximity. Whenever the pen is lifted away from the tablet,
+  not only after the tablet has just appeared, there is no pen position,
+  and a toggle places the area, and the ghost, around the mouse pointer.
 - Stylus click-to-focus between windows does not work in Plasma 6.6 (KDE
   bug 498386 and friends). The bug is upstream.
 - A sleeping DisplayPort monitor removes the output. KWin runs a 1920x1080
@@ -575,16 +605,20 @@ Runtime files live in `$XDG_RUNTIME_DIR/tabprec/`. The pen ledgers live in
 
 ## Tests
 
-`tests/run_all.sh` runs every gate in about a minute. It needs Python 3 and
-bash only: no Qt, no tablet, no KWin. Exit 0 = all green.
+`tests/run_all.sh` runs every gate in about 85 seconds. It needs Python 3,
+bash and PyQt6 (for the import smoke, which is skipped without it): no
+tablet, no KWin, no window on the desktop. Exit 0 = all green.
 
 | Gate | What it checks |
 |---|---|
 | `py_compile`, `bash -n` | every Python file compiles, every shell script parses |
-| `tests/check_map.py` | every chunk marker has a bullet in `PROJECT_MAP.md`, and every bullet names a marker; a source file's header stays at 2 comment lines |
+| import smoke | `wacom_center.py` and `wacom_profiles.py` import offscreen (`QT_QPA_PLATFORM=offscreen`): a wrong import name cannot pass through `py_compile` |
+| `tests/check_map.py` | every top-level def, function and mode has a chunk marker, every marker has a bullet in `PROJECT_MAP.md`, and every bullet names a marker; a source file's header stays at 2 comment lines |
 | `tests/test_script.sh` (69 checks) | the toggle: on, move, resize around the centre with the clamp, the size limits (the defaults, no limit, one pixel), suspend, resume, off, the run lock, and a heal that waits for the pen without holding that lock. The write-back: a bus switch and a logout while on leave the pen on the whole screen, a base that is not the whole screen is put back as itself, the ledger fallback when the write-back cannot be proved, OFF with the tablet switched off, and a pause that resumes at the same area within `RECONNECT` seconds. A stubbed `busctl` that keeps `outputArea` per product AND seeds a device that has just appeared from `kcminputrc`, the way KWin does |
 | `tests/test_size.sh` (24 checks) | the ring script: the step and the size limits, `RING_STEP` from the conf, resize only with the mode on, the preview only with it off, nothing while the marker is fresh, and 12 ticks at once stepping `SCALE` exactly 12 times without losing a conf line |
 | `tests/test_hover.py` (88 checks) | the daemon: a named pipe plays the pad, a fake pen, fake overlays, a fake toggle. The ghost, the drag, `waiting` and `solid`, a conf edit mid-rest, `HOLD` 0, the long press and what must not arm it, the heal that a node set starts, and the runtime dir and control pipe the daemon makes for itself at a fresh login, and the absence timer that pauses precision mode. A held touch chord and the ghost released when the tablet goes away, and a new heal when it returns. A chord held through a conf reload goes up at the reload, once. A node that refuses its first open is opened by a later rescan, and so is a node whose reads end under the same name. One heal at a time, and a failed heal is run again, 5 runs at most. A pen with no position yet, in the daemon's reader and in `tablet-pen-pos.py` (the pen node found by `BTN_TOOL_PEN`, then exit 1 without asking XWayland) |
+| `tests/test_profiles.py` (46 checks) | the profile library, Qt-free: a hostile profile (a shell payload in a value, an unknown key, a chord on the precision key, an oversized image, a 3 MB file that stops the switch with the live files untouched), the pie rule, the order of a switch's writes, owned conf keys kept, a 2026-09 fixture's round trip, the pressure writes with and without a connected pen, the conf lock timeout, a missing active profile recreated, a ring tick between two saves (the ring script run from a scratch copy beside a no-op preview), profile names. The real `kreadconfig6` and `kwriteconfig6` on a scratch `kcminputrc`, logged by stubs, with a dead D-Bus address so `--notify` reaches no live session |
 
 Not part of the gate: `tests/add_markers.py` puts a chunk marker above every
-new def, function or mode (idempotent).
+new def, function or mode (idempotent); `tests/check_map.py` imports its rule
+to find a def with no marker.

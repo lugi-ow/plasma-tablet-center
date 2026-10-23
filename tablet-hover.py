@@ -63,7 +63,7 @@ def log(msg):
 def read_conf():
     values = {}
     try:
-        for line in CONF.read_text().splitlines():
+        for line in CONF.read_text(errors="replace").splitlines():   # a stray byte must not end the daemon
             key, _, val = line.partition("=")
             values[key.strip()] = val.split("#", 1)[0].strip()
     except OSError:
@@ -140,7 +140,7 @@ def wacom_nodes():
         return found
     for name in names:
         try:
-            uevent = open(f"{base}/{name}/device/uevent").read()
+            uevent = open(f"{base}/{name}/device/uevent", encoding="utf-8", errors="replace").read()
         except OSError:
             continue
         match = re.search(r"^HID_ID=(\d{4}):0000056A:0000([0-9A-F]{4})", uevent, re.M | re.I)
@@ -154,7 +154,7 @@ def wacom_nodes():
 def pen_open():
     """fd of the tablet's Pen evdev node (uaccess ACL), or None."""
     try:
-        blocks = open("/proc/bus/input/devices").read().split("\n\n")
+        blocks = open("/proc/bus/input/devices", encoding="utf-8", errors="replace").read().split("\n\n")
     except OSError:
         return None
     for block in blocks:
@@ -340,7 +340,9 @@ class Follower:
             log("relocation cancelled: overlay back home")
             self._send(self.home + b"solid\n")
             MARK.unlink(missing_ok=True)
-            toggle("resume")                  # the old area is mapped again
+            if not toggle("resume"):          # the old area is mapped again
+                log("resume failed: the pen stays on the whole screen with the mode on; "
+                    "press the precision key to end it")
         if self.proc is not None:
             self.proc.stdin.close()           # closes the sink fd; the ghost quits on EOF
             self.proc.terminate()
@@ -587,6 +589,7 @@ def watch(conf, follower, warper=None):
                     pending.pop(fd, None)
                     held.discard(fd)
                     down.pop(fd, None)
+                    rest.pop(fd, None)        # the fd number comes back with the next node: no stale touch bits
                     long_press.pop(fd, None)
                     for key in [k for k in touch_since if k[0] == fd]:
                         del touch_since[key]

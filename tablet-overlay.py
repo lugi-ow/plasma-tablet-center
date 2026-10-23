@@ -49,7 +49,7 @@ def place(values, dim=None):
         root.setProperty("dimval", dim)
 
 
-place([int(a) for a in args[:4]], float(args[4]) if len(args) == 5 else 0.35)
+place([int(a) for a in args[:4]], float(args[4]) if len(args) == 5 else None)   # no DIM: the QML default
 root.setProperty("waiting", waiting)
 
 # ── chunk: input-source

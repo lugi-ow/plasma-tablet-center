@@ -37,9 +37,9 @@ SCALE=$(awk -v s="$SCALE" -v d="$STEP" -v lo="$SCALE_MIN" -v hi="$SCALE_MAX" 'BE
 # rewrite SCALE/DIM in place and keep every other line (touch-preview keys)
 REST=$(grep -v -E '^[[:space:]]*(SCALE|DIM)=' "$CONF" 2>/dev/null)
 TMP="$CONF.tmp.$$"
-{ printf 'SCALE=%s\nDIM=%s\n' "$SCALE" "$DIM"; [ -n "$REST" ] && printf '%s\n' "$REST"; true; } > "$TMP" &&
-    mv -f "$TMP" "$CONF" || rm -f "$TMP"   # atomic: no crash and no full disk can leave half a conf; `true`:
-    # REST empty makes the `&&` false, which without this would fail the WHOLE group and skip the write
+{ printf 'SCALE=%s\nDIM=%s\n' "$SCALE" "$DIM" && { [ -z "$REST" ] || printf '%s\n' "$REST"; }; } > "$TMP" &&
+    mv -f "$TMP" "$CONF" || rm -f "$TMP"   # atomic: no crash and no full disk can leave half a conf. The group's status
+    # is the printfs' own (an empty REST is simply nothing to add), so a write that failed is never moved into place
 exec 8>&-                                  # written: let the next tick in before the toggle runs
 
 # ── chunk: resize-or-preview

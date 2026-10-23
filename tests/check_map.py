@@ -7,9 +7,12 @@ markers. The map holds one bullet per marker (- **chunk: `name`** — ...);
 names before the bullet's first " — " count, and two or three bold names
 separated by slashes share a bullet.
 
-Checks: every marker has a bullet in its file's section; every bullet names a
-marker, unless tagged *(public copy only)* or *(personal copy only)*; a marker
-above a def / class / bash function / case mode carries that thing's name;
+Checks: every top-level def / class / bash function / case mode has a marker
+in the files add_markers.py lists (its own rule, imported; install.sh and
+uninstall.sh have none by design); every marker has a bullet in its file's
+section; every bullet names a marker, unless tagged *(public copy only)* or
+*(personal copy only)*; a marker above a def / class / bash function / case
+mode carries that thing's name;
 markers are unique within a file; every source file has a "### `file`" section
 and every section names a file (a name ending in "/" is a directory; a HEADING
 with a *(... copy only)* tag may name a file this copy lacks); bullets stay
@@ -19,6 +22,9 @@ comment lines (the map owns structure).
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import add_markers  # noqa: E402 - the sibling script: its mark() is the "every def has a marker" rule
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP = os.path.join(ROOT, "PROJECT_MAP.md")
@@ -100,10 +106,15 @@ def main():
     total = 0
     for fname in files:
         with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
-            head = [line for line in f.read().split("\n") if not line.startswith("#!")]
+            text = f.read()
+        head = [line for line in text.split("\n") if not line.startswith("#!")]
         n = next((i for i, line in enumerate(head) if not line.startswith(("#", "//")) or MARKER.match(line)), len(head))
         if n > MAX_HEADER:
             problems.append(f"{fname}: header is {n} comment lines (cap {MAX_HEADER}): the map owns structure")
+        if fname in add_markers.FILES:                            # the sources it owns: install.sh and uninstall.sh
+            unmarked = add_markers.mark(text.split("\n"), fname)  # (public copy) have no markers by design. On a
+            if unmarked:                                          # copy: counts what it would add
+                problems.append(f"{fname}: {unmarked} def, function or mode without a marker (tests/add_markers.py adds them)")
         marks = markers_in(os.path.join(ROOT, fname))
         total += len(marks)
         if fname not in sections:

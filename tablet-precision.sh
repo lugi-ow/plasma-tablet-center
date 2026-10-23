@@ -31,11 +31,12 @@ note() {  # silent by design: the overlay is the feedback, only errors notify
     notify-send -a Tablet -i input-tablet -t 1800 "Precision mode" "$1" 2>/dev/null
 }
 # ── chunk: kload
-kload() { qdbus6 $KW /Scripting $SCR.unloadScript "$2" >/dev/null 2>&1
-          qdbus6 $KW /Scripting $SCR.loadScript "$1" "$2" >/dev/null &&
-          qdbus6 $KW /Scripting $SCR.start; }
+kload() {  # busctl like every other D-Bus call here: qdbus6 is a Qt tool a box may lack, and this is the mouse fallback's only road
+          busctl --user call $KW /Scripting $SCR unloadScript s "$2" >/dev/null 2>&1
+          busctl --user call $KW /Scripting $SCR loadScript ss "$1" "$2" >/dev/null &&
+          busctl --user call $KW /Scripting $SCR start >/dev/null; }
 # ── chunk: kunload
-kunload() { qdbus6 $KW /Scripting $SCR.unloadScript "$1" >/dev/null 2>&1; }
+kunload() { busctl --user call $KW /Scripting $SCR unloadScript s "$1" >/dev/null 2>&1; }
 
 # ── chunk: find_pen
 find_pen() {  # the pen's KWin sysname into $pen: the cached one when KWin still calls it a tablet tool (one D-Bus call), else a walk over every device; exits 1 when there is none (heal: after 2 s of retries, silently)
@@ -223,10 +224,12 @@ unpause() {  # a pause younger than RECONNECT seconds comes back at the SAME are
 # heal looks for the pen BEFORE the lock. The daemon starts heal when a tablet appears, and KWin can list
 # the pen up to 2 s later: inside the lock, that wait delayed every key press and froze the daemon's calls.
 [ "$MODE" = heal ] && find_pen
+case "$MODE" in toggle|resize|where|suspend|resume|heal|pause) ;;   # a mistyped verb must not toggle the mode
+    *) echo "usage: $(basename "$0") [toggle|resize|where|suspend|resume|heal|pause]" >&2; exit 2;; esac
 exec 9>"$RD/lock"; flock -w 5 9 || exit 1   # one run at a time: a long press makes KWin's MOVE toggle and the daemon's OFF toggle land in a row
 [ -f "$CONF" ] && . "$CONF"   # read AFTER the lock: a ring tick queued behind another applies the newest SCALE, not the one it was born with
-SCALE=${SCALE:-0.36}
-DIM=${DIM:-0.10}
+SCALE=${SCALE:-0.36}; SCALE=${SCALE/,/.}; case "$SCALE" in *[!0-9.]*|*.*.*|.) SCALE=0.36;; esac   # a comma decimal (a hand edit under
+DIM=${DIM:-0.10}; DIM=${DIM/,/.}; case "$DIM" in *[!0-9.]*|*.*.*|.) DIM=0.10;; esac               # a comma locale) reads as a dot; junk = the default
 # The soft cap on SCALE (Wacom Center's two size-limit fields): 0 = no cap on that side. Without one the
 # area still ends at the full screen width and at one pixel - a wider or an empty area maps nothing.
 case "${SCALE_MIN:-}" in ""|*[!0-9.]*) SCALE_MIN=0.05;; esac
@@ -277,6 +280,7 @@ resume)    # while ON: the area on record again (the relocation was cancelled)
 # ── chunk: pause
 pause)     # the tablet gone past the daemon's grace with the mode ON ($2 = when it went): end the mode without a pen, keep the area for RECONNECT s
     if [ -f "$STATE" ]; then
+        PEN_OPTIONAL=1; find_pen && exit 0   # KWin still lists the pen: the tablet is here (a node the daemon could not open), nothing to pause
         { echo "${2:-$(date +%s)}"; cat "$STATE"; cat "$AREA" 2>/dev/null; } > "$PAUSED"
         rm -f "$STATE" "$AREA" "$MARK"
         if [ -f "$RD/overlay.pid" ]; then

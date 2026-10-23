@@ -13,6 +13,7 @@ cp "$SRC" "$S/bin/tablet-precision.sh"
 cp "$HERE/fake/tablet-overlay.py" "$HERE/fake/tablet-pen-pos.py" "$S/bin/"
 chmod +x "$S/bin/"* "$HERE/stubs/"*
 export PATH="$HERE/stubs:$PATH" XDG_RUNTIME_DIR="$S/rd" XDG_CONFIG_HOME="$S/conf" XDG_STATE_HOME="$S/state"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$S/no-bus"   # kwriteconfig6 --notify writes and exits 0 on a dead bus: nothing reaches the live session
 export STUB_LOG="$S/busctl.log" FAKE_LOG="$S/overlay.log" STUB_AREAS="$S/kwin"
 printf 'SCALE=0.29\nDIM=0.10\nHOVER_MASK=0x80\n' > "$S/conf/tabprec.conf"
 T="$S/bin/tablet-precision.sh"
@@ -136,8 +137,8 @@ appear 864
 "$T" toggle 2>/dev/null; sleep 0.4
 check "8 toggle ON after the bus switch saves 0 0 1 1 as the base" '[ "$(cat "$RD/saved-area")" = "0 0 1 1" ]'
 "$T" toggle; sleep 0.4
-check "8 off: 864 on the whole screen, kcminputrc clean" \
-    '[ "$(cat "$STUB_AREAS/area-864")" = "0 0 1 1" ] && [ -z "$(kc 864)" ]'
+check "8 off: 864 on the whole screen, kcminputrc names it (absent or 0,0,1,1: the same to KWin)" \
+    '[ "$(cat "$STUB_AREAS/area-864")" = "0 0 1 1" ] && { [ -z "$(kc 864)" ] || [ "$(kc 864)" = "0,0,1,1" ]; }'
 
 # 9: a logout while ON. $RD dies with the session and KWin restarts, so both pens turn up fresh and
 #    read kcminputrc - which names the whole screen. Nothing has to repair anything.

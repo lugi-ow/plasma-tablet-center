@@ -6,13 +6,12 @@ script mode of the toolkit, plus the hand-placed block markers listed below
 directly on its target, never above the file header. Idempotent: re-run after
 adding functions; existing markers are left alone. With OUT_DIR the marked
 files are written there and SRC_DIR is left untouched (tests/stage_public.sh
-uses that to stage the public tree)."""
+uses that to stage the public tree). check_map.py imports mark(): a file it
+would add a marker to has a def, function or mode with none."""
 import os
 import re
 import sys
 
-SRC = sys.argv[1]
-OUT = sys.argv[2] if len(sys.argv) > 2 else None
 FILES = ("tablet-precision.sh", "tablet-pen-pos.py", "tablet-overlay.py", "tablet-overlay.qml",
          "tablet-hover.py", "tablet-precision-size.sh", "tablet-size-preview.py",
          "tablet-pointer-warp.py", "tablet-pad-probe.py", "wacom_center.py", "wacom_profiles.py")
@@ -27,7 +26,7 @@ BLOCKS = {
                            ("        Shape {", "waiting-border"), ("    NumberAnimation {", "flow-animation")],
     "tablet-hover.py": [("FAMILIES = {", "FAMILIES"), ("MODELS = {", "MODELS")],
     "tablet-precision-size.sh": [('exec 8>"$RD/conf.lock"', "tick-lock"),
-                                 ('if [ -f "$MARK" ]', "drag-guard"), ("STEP=0.02", "step"),
+                                 ('if [ -f "$MARK" ]', "drag-guard"), ("STEP=$(awk", "step"),
                                  ("# rewrite SCALE/DIM in place", "conf-write"),
                                  ('if [ -f "$RD/saved-area" ]', "resize-or-preview")],
     "tablet-size-preview.py": [("app = QGuiApplication", "window"), ("quit_timer = QTimer()", "timers"),
@@ -87,19 +86,25 @@ def mark(lines, fname):
     return added
 
 
-for fname in FILES:
-    path = os.path.join(SRC, fname)
-    if not os.path.exists(path):
-        print(f"{fname}: missing")
-        continue
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    lines = text.split("\n")
-    added = mark(lines, fname)
-    dest = os.path.join(OUT, fname) if OUT else path
-    if OUT:
-        os.makedirs(OUT, exist_ok=True)
-    with open(dest, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    total = sum(1 for l in lines if "── chunk:" in l)
-    print(f"{fname}: +{added} markers ({total} total)")
+def main(src, out=None):
+    """Mark every file of FILES under src, in place or into out."""
+    for fname in FILES:
+        path = os.path.join(src, fname)
+        if not os.path.exists(path):
+            print(f"{fname}: missing")
+            continue
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        lines = text.split("\n")
+        added = mark(lines, fname)
+        dest = os.path.join(out, fname) if out else path
+        if out:
+            os.makedirs(out, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        total = sum(1 for l in lines if "── chunk:" in l)
+        print(f"{fname}: +{added} markers ({total} total)")
+
+
+if __name__ == "__main__":                      # importable by check_map.py: mark() is the gate's rule too
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
