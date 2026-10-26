@@ -24,6 +24,7 @@ elif [ "$2" = "get-property" ]; then
             tabletTool)      [ -n "${STUB_NO_PEN:-}" ] && echo 'b false' || echo 'b true' ;;
             tabletPad)       echo 'b false' ;;
             size)            echo '(dd) 224 148' ;;
+            leftHanded)      [ -n "${STUB_LEFT:-}" ] && echo "b $STUB_LEFT" ;;   # silent unless a rig sets it
             vendor)          echo 'u 1386' ;;
             product)         echo "u $PRODUCT" ;;
             outputArea)      if [ -n "$KEPT" ] && [ ! -f "$KEPT" ]; then   # this device has just appeared, like KWin it loads

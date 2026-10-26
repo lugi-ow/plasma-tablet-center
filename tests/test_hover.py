@@ -72,6 +72,7 @@ WATCH_REREADS_CONF = len(_READ_CALLS) >= 2
 PEN = [(0.5, 0.5)]
 hover.pen_open = lambda: os.open("/dev/null", os.O_RDONLY)
 hover.pen_norm = lambda fd: PEN[0]
+hover.pen_node = lambda: None             # turn_poll never asks the live KWin (section L fakes it)
 WARPS = []                                # (pen position, mapped) per warp the daemon asked for
 EVENTS = []                               # warps and chords in daemon order: the warp must precede the chord
 
@@ -526,6 +527,7 @@ spec_p.loader.exec_module(hn)
 hn.RESCAN = 0.2
 hn.CTL = SCRATCH / "hover_n.ctl"
 hn.heal = lambda: None
+hn.pen_node = lambda: None
 said = []
 hn.log = said.append
 node_a, node_b = SCRATCH / "n_a.fifo", SCRATCH / "n_b.fifo"
@@ -689,6 +691,7 @@ def attempt(call):
 
 got = asked = None
 if pen_pos is not None:
+    pen_pos.left_handed = lambda sysname: False   # never the live KWin; section L turns the tablet
     pen_pos.fcntl = FakeEvdev(600, 300, False, node=SCRATCH / "event23")
     got = attempt(lambda: pen_pos.evdev_pen_norm(str(DEVICES), str(SCRATCH)))
 check("N pen-pos: the node that can report BTN_TOOL_PEN, not the first name with 'pen' in it", got == (0.6, 0.3))
@@ -705,6 +708,130 @@ if pen_pos is not None:
     got = attempt(lambda: pen_pos.main([]))
 check("N pen-pos: OUT_OF_RANGE exits 1 at once, XWayland unasked (its data is older), so the toggle uses the mouse",
       got == ("exit", 1) and asked == [])
+
+# --- L: left-handed mode. KDE's Left-handed mode (System Settings > Drawing Tablet > Pen) makes libinput
+#        turn the tablet 180 degrees (evdev-tablet.c invert_axis) before KWin maps it; the kernel's
+#        position does not turn. Read raw, the area, the ghost, the drag and the warp landed on the
+#        opposite side of the screen. Fresh module copies; KWin is always a fake here. The raw values
+#        are binary fractions, and no turned value equals the same point with x and y swapped ---
+import contextlib
+import io
+
+
+def near(a, b):
+    try:
+        return len(a) == len(b) and all(abs(x - y) < 1e-9 for x, y in zip(a, b))
+    except TypeError:
+        return False
+
+
+def load(name, path):
+    try:
+        s = importlib.util.spec_from_file_location(name, path)
+        m = importlib.util.module_from_spec(s)
+        s.loader.exec_module(m)
+        return m
+    except BaseException as err:             # noqa: BLE001 - a broken copy fails its checks below
+        print(f"# {path.name} import: {err!r}")
+        return None
+
+
+def printed(mod, argv):
+    """What mod.main(argv) printed, or how it ended."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ended = attempt(lambda: mod.main(argv))
+    return buf.getvalue().strip() if ended is None else ended
+
+
+ASKED = []
+pl = load("pen_pos_l", SRC.parent / "tablet-pen-pos.py")
+if pl is not None:
+    pl.fcntl = FakeEvdev(640, 256, True, node=SCRATCH / "event23", lo=0, hi=1024)   # raw (0.625, 0.25)
+    real_evdev = pl.evdev_pen_norm
+    pl.evdev_pen_norm = lambda: real_evdev(str(DEVICES), str(SCRATCH))
+    pl.screen_size = lambda: (2560, 1440, None, None)
+    pl.left_handed = lambda sysname: ASKED.append(sysname) or sysname == "event23"
+    pl.output_area = lambda: (0.5, 0.5, 0.25, 0.25)
+check("L pen-pos: left-handed mode turns evdev 180 degrees, asked for the node read: (0.625, 0.25) prints 960 1080",
+      pl is not None and printed(pl, []) == "960 1080 2560 1440" and ASKED == ["event23"])
+check("L pen-pos: turned BEFORE --mapped: in outputArea 0.5 0.5 0.25 0.25 it prints 1520 990",
+      pl is not None and printed(pl, ["--mapped"]) == "1520 990 2560 1440")
+if pl is not None:
+    pl.evdev_pen_norm = lambda: None         # no evdev access: the XWayland fallback
+    pl.xwayland_stylus_norm = lambda dpy: (0.25, 0.75)
+check("L pen-pos: XWayland's position comes through KWin, never turned again",
+      pl is not None and printed(pl, []) == "640 1080 2560 1440")
+
+hl = load("hover_l", SRC)
+lfd = os.open("/dev/null", os.O_RDONLY)
+turned = lifted = None
+if hl is not None:
+    if hasattr(hl, "TURN"):
+        hl.TURN["on"] = True
+    hl.fcntl = FakeEvdev(256, 384, True, lo=0, hi=1024)        # raw (0.25, 0.375)
+    turned = attempt(lambda: hl.pen_norm(lfd))
+    hl.fcntl = FakeEvdev(0, 0, False, lo=0, hi=1024)
+    lifted = attempt(lambda: hl.pen_norm(lfd))
+os.close(lfd)
+check("L daemon: pen_norm turns with the mode, (0.25, 0.375) -> (0.75, 0.625); a zeroed pen stays no position",
+      near(turned, (0.75, 0.625)) and lifted is None)
+
+warped = []
+if hl is not None:
+    hl.fcntl = FakeEvdev(256, 384, True, lo=0, hi=1024)
+    hl.pen_open = lambda: os.open("/dev/null", os.O_RDONLY)
+    hl.AREA = SCRATCH / "area-l"
+    hl.AREA.write_text("1280 720 640 360 0.10 2560 1440 0.5 0.5 0.25 0.25\n")
+    hl.log = lambda text: None
+    lw = attempt(hl.Warper)                  # loads tablet-pointer-warp.py; no device is made
+    if not isinstance(lw, tuple):
+        lw.fd, lw.screen = 99, (2560, 1440)
+        lw.mod = type("Mod", (), {"warp": staticmethod(lambda fd, fx, fy: warped.append((fx, fy)))})()
+        attempt(lambda: lw.warp(True, "press"))
+check("L daemon: the warp lands on the turned pen, then goes through the area: (0.6875, 0.65625)",
+      len(warped) == 1 and near(warped[0], (0.6875, 0.65625)))
+
+ASKED_D, seen, answer = [], [], [None]
+if hl is not None and hasattr(hl, "turn_poll"):
+    hl.TURN.update(key=None, on=False)
+    hl.KCMINPUTRC = SCRATCH / "kcminputrc-l"
+    hl.KCMINPUTRC.write_text("[Libinput]\n")
+    hl.pen_node = lambda: "event23"
+    hl.left_handed = lambda sysname: ASKED_D.append(sysname) or answer[0]
+
+    def poll(said):
+        answer[0] = said
+        hl.turn_poll()
+        seen.append(hl.TURN["on"])
+
+    poll(True); poll(True); poll(True)       # three rescans, nothing changed: one ask
+    hl.KCMINPUTRC.write_text("[Libinput]\nOutputArea=0,0,1,1\n")   # KWin rewrote the file
+    poll(None)                               # no answer from KWin: the last value stays...
+    poll(None)                               # ...and KWin is asked again at the next rescan
+    hl.pen_node = lambda: "event24"          # another pen node: the tablet on the other bus
+    poll(False); poll(False)
+check("L daemon: KWin asked once per pen node and kcminputrc change, not per rescan; no answer = asked again",
+      ASKED_D == ["event23", "event23", "event23", "event24"] and seen == [True] * 5 + [False] * 2)
+
+BIN_L = SCRATCH / "bin-l"                    # a busctl that says what the rig wants, and logs what it was asked
+BIN_L.mkdir()
+(BIN_L / "busctl").write_text('#!/bin/bash\necho "$*" >> "$LH_LOG"\nprintf "%s\\n" "$LH_SAY"\nexit "${LH_EXIT:-0}"\n')
+(BIN_L / "busctl").chmod(0o755)
+os.environ["LH_LOG"] = str(SCRATCH / "busctl-l.log")
+path_before = os.environ["PATH"]
+os.environ["PATH"] = f"{BIN_L}:{path_before}"
+real_d, real_p = load("hover_l2", SRC), load("pen_pos_l2", SRC.parent / "tablet-pen-pos.py")
+said_back = []
+for text, code in (("b true", "0"), ("b false", "0"), ("", "1")):
+    os.environ["LH_SAY"], os.environ["LH_EXIT"] = text, code
+    said_back.append((attempt(lambda: real_d.left_handed("event23")), attempt(lambda: real_p.left_handed("event23"))))
+os.environ["PATH"] = path_before
+LH_ASK = "get-property org.kde.KWin /org/kde/KWin/InputDevice/event23 org.kde.KWin.InputDevice leftHanded"
+LH_LOG = SCRATCH / "busctl-l.log"
+check("L both readers: KWin's 'b true' = turned, 'b false' or no answer = not; the pen's own node is asked",
+      said_back == [(True, True), (False, False), (None, False)]
+      and LH_LOG.exists() and LH_LOG.read_text().count(LH_ASK) == 6)
 
 print(f"failures: {fails}")
 os.close(writer)

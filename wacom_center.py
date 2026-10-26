@@ -14,7 +14,7 @@ from PyQt6.QtCore import (QBuffer, QIODevice, QLocale, QPointF,
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (QColor, QFontMetrics, QGuiApplication, QIcon, QImage, QImageReader,
                          QKeySequence, QPainter, QPainterPath, QPalette, QPen, QPixmap)
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+from PyQt6.QtWidgets import (QApplication, QBoxLayout, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
                              QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton, QSlider,
                              QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
@@ -33,7 +33,8 @@ RED = "#da4453"                          # Breeze negative: a row consumed by pr
 PIE_TIP = ("A pie key opens a Kando menu at the pen.\n"
            "1. In Kando, give the menu a shortcut.\n"
            "2. Type the same shortcut here, in Touch or in Press.\n"
-           "3. Tick the matching side: left box = Touch, right = Press.\n"
+           "3. Tick the matching side: the box nearer the key picture\n"
+           "   = Touch, the other = Press.\n"
            "4. Click Apply bindings.\n"
            "The toolkit moves the mouse to the pen, then presses the\n"
            "shortcut, so the menu opens at the pen. A touch pie opens on\n"
@@ -67,8 +68,16 @@ RING_TIP = ("The shortcut for one turn direction.\n"
             "Letters and digits fail when a non-Latin layout is active;\n"
             "F-keys and modifiers always work.")
 PAD_TIP = ("The keys as printed on the tablet, top to bottom.\n"
-           "On a tablet rotated 180 degrees the keys sit on the right\n"
-           "and this table reads bottom-up; the key numbers do not move.")
+           "Left-handed (the box above the table): the table turns with\n"
+           "the tablet - the keys on the right, key 8 on top. Each row\n"
+           "keeps its own key, so a binding lands on the key beside it.")
+LEFT_TIP = ("KDE's Left-handed mode, for the tablet turned around: the same\n"
+            "box as System Settings > Drawing Tablet > Pen, set here for the\n"
+            "cable and for Bluetooth at once. It acts at once (Apply is for\n"
+            "the bindings); the pen follows at your next lift.\n"
+            "The table turns with the tablet; each row keeps its own key.\n"
+            "The ring keeps its directions: clockwise stays clockwise.\n"
+            "A tablet setting: the same in every profile.")
 PRM_TIP = ("One key toggles precision mode.\n"
            "Tick it: Apply gives the key the toggle shortcut, the ghost\n"
            "and the area drag. Red outlines = fields the mode consumes.\n"
@@ -552,9 +561,10 @@ def pad_icon(kind):
 
 
 # ── chunk: ring_icon
-def ring_icon(mode):
+def ring_icon(mode, turned=False):
     """The pad ring as a 22 px doughnut with mode n's light lit: mode 1 sits
-    at 7:30 on the clock face, the next modes continue clockwise."""
+    at 7:30 on the clock face (1:30 on a turned tablet), the next modes
+    continue clockwise."""
     pal = QApplication.palette()
     ink, paper = pal.color(QPalette.ColorRole.Text), pal.color(QPalette.ColorRole.Base)
     pm = QPixmap(22, 22)
@@ -566,6 +576,8 @@ def ring_icon(mode):
     p.drawEllipse(QPointF(11, 11), 8, 8)
     p.drawEllipse(QPointF(11, 11), 3.4, 3.4)
     dx, dy = {1: (-1, 1), 2: (-1, -1), 3: (1, -1), 4: (1, 1)}[mode]
+    if turned:
+        dx, dy = -dx, -dy                    # the lights turn with the tablet
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(AMBER))
     p.drawEllipse(QPointF(11 + dx * 4.07, 11 + dy * 4.07), 2, 2)
@@ -698,13 +710,14 @@ class PadTab(QWidget):
     Disabled in kcminputrc + its conf chord (amber outline); the Precision
     key gets the toggle chord + HOVER_MASK, its chord fields consumed (red
     outline, read-only Press). Apply and a register change poke the
-    daemon's control pipe."""
+    daemon's control pipe. The Left-handed box above it turns the table
+    with the tablet (_place); every row keeps its own key."""
     MARKS = ("plain", "dash", "dot", "plain", "plain", "dot", "dash", "plain")
 
     def __init__(self, pad, asleep=False, pen=None, sysname=None):
         super().__init__()
         self.pad = pad
-        self.pen, self.sysname = pen, sysname     # only for the post-Apply checkpoint()
+        self.pen, self.sysname = pen, sysname     # the post-Apply checkpoint() and the Left-handed box
         self.parse = wacom_profiles.load_parse_chord()
         self._prm_last = None
         self.dirty = False          # a switch asks Apply/Discard/Cancel while this is set
@@ -718,16 +731,22 @@ class PadTab(QWidget):
             outer.addWidget(note)
             outer.addStretch()                       # the lines stay at the top of the page
             return
+        self.turned = wacom_profiles.left_handed_state(pen, sysname)
+        self.left = QCheckBox("Left-handed: the tablet turned around, the keys on the right")
+        self.left.setToolTip(LEFT_TIP)
+        self.left.setChecked(self.turned)
+        self.left.setEnabled(bool(pen))              # no pen name yet: nothing to set it for
+        self.left.toggled.connect(self.set_left_handed)
+        outer.insertWidget(0, self.left)             # above the profile line: the desk, not the profile
         if asleep:
             asleep_note = QLabel("The tablet is asleep. These settings apply when it wakes.")
             asleep_note.setWordWrap(True)
             outer.addWidget(asleep_note)
         grid_widget = QWidget()
-        grid = QGridLayout(grid_widget)
+        self.grid = QGridLayout(grid_widget)
         outer.addWidget(grid_widget)
         outer.addStretch()                           # extra height goes below the table, not into its rows
-        grid.setColumnStretch(1, 2)
-        grid.setColumnStretch(2, 3)
+        self._heads = []                             # (label, column, span) as drawn right-handed
         for col, span, text, tip in ((0, 1, "| Pad keys |", PAD_TIP),
                                      (1, 2, "| Shortcuts |", SHORTCUT_TIP),
                                      (3, 1, "| Touch register |", REG_TIP),
@@ -735,22 +754,22 @@ class PadTab(QWidget):
                                      (5, 1, "| Precision |", PRM_TIP)):
             head = QLabel(text)
             head.setToolTip(tip)
-            grid.addWidget(head, 0, col, 1, span, Qt.AlignmentFlag.AlignHCenter)
-        side = QLabel("(on the left side)")
-        side.setToolTip(PAD_TIP)
-        grid.addWidget(side, 1, 0, Qt.AlignmentFlag.AlignHCenter)
+            self._heads.append((head, col, span))
+        self._side = QLabel()
+        self._side.setToolTip(PAD_TIP)
+        self._subs = []
         for col, text, tip in ((1, "Touch", TOUCH_TIP), (2, "Press", SHORTCUT_TIP)):
             sub = QLabel(text)
             sub.setToolTip(tip)
-            grid.addWidget(sub, 1, col, Qt.AlignmentFlag.AlignHCenter)
-        info = QLabel()
+            self._subs.append((sub, col))
+        self._info = QLabel()
         theme = QIcon.fromTheme("dialog-information")
         if theme.isNull():
-            info.setText("(i)")
+            self._info.setText("(i)")
         else:
-            info.setPixmap(theme.pixmap(16, 16))
-        info.setToolTip(PIE_TIP)
-        grid.addWidget(info, 1, 4, Qt.AlignmentFlag.AlignHCenter)
+            self._info.setPixmap(theme.pixmap(16, 16))
+        self._info.setToolTip(PIE_TIP)
+        self._pics, self._pies, self._ring_pics, self._ring_cells = {}, {}, {}, {}
         self.touches, self.presses, self.regs = {}, {}, {}
         self._saved_press = {}      # a row the Precision tick turned red: what its Press box said before
         self._raw = {}              # idx -> True: a raw-form binding, read-only, Apply never touches it
@@ -758,11 +777,10 @@ class PadTab(QWidget):
         self._ring_raw = {}         # mode -> True: Scroll or Disabled, set in System Settings; read-only, Apply skips it
         hold_default = read_conf()["HOLD"]
         for idx in range(8):
-            row = idx + 2 if idx < 4 else idx + 6    # the ring sits between keys 4 and 5, as on the pad
             picture = QLabel()
             picture.setPixmap(pad_icon(self.MARKS[idx]))
             picture.setToolTip(f"Key {idx + 1}")
-            grid.addWidget(picture, row, 0, Qt.AlignmentFlag.AlignCenter)
+            self._pics[idx] = picture
             touch = AntsLineEdit()
             touch.setPlaceholderText("Ctrl, or Alt+F5")
             touch.setToolTip(TOUCH_TIP)
@@ -787,16 +805,12 @@ class PadTab(QWidget):
             tp.toggled.connect(self.restyle)
             pp.toggled.connect(self.restyle)
             prm.clicked.connect(lambda _, i=idx: self.pick_prm(i))
-            grid.addWidget(touch, row, 1)
-            grid.addWidget(press, row, 2)
-            grid.addWidget(reg, row, 3)
             pies = QWidget()
             pair = QHBoxLayout(pies)
             pair.setContentsMargins(0, 0, 0, 0)
             pair.addWidget(tp)
             pair.addWidget(pp)
-            grid.addWidget(pies, row, 4, Qt.AlignmentFlag.AlignCenter)
-            grid.addWidget(prm, row, 5, Qt.AlignmentFlag.AlignCenter)
+            self._pies[idx] = pies
         try:
             mask = int(conf_value("HOVER_MASK"), 0)
         except (TypeError, ValueError):
@@ -808,11 +822,12 @@ class PadTab(QWidget):
                 break
         for mode in range(4):
             picture = QLabel()
-            picture.setPixmap(ring_icon(mode + 1))
             picture.setToolTip(f"Pad ring, mode {mode + 1}. The light on the tablet shows "
                                "the active mode. Press the ring button to change the mode.")
-            grid.addWidget(picture, mode + 6, 0, Qt.AlignmentFlag.AlignCenter)
-            pair = QHBoxLayout()
+            self._ring_pics[mode] = picture
+            cell = QWidget()                         # a widget, not a bare layout: _place moves it again
+            pair = QHBoxLayout(cell)
+            pair.setContentsMargins(0, 0, 0, 0)
             boxes = []
             for way in ("clockwise", "counter-clockwise"):
                 turn = QLineEdit()
@@ -832,19 +847,13 @@ class PadTab(QWidget):
                     turn.setToolTip("Set in System Settings > Drawing Tablet.")
                 self._ring_raw[mode] = True
             self.rings[mode] = boxes
-            grid.addLayout(pair, mode + 6, 1, 1, 2)
-        note = QLabel("Precision mode consumes <b>both</b> the Touch and Press fields, "
-                      "and cannot be a pie key.")
-        grid.addWidget(note, 14, 0, 1, 6)
-        apply_btn = QPushButton("Apply bindings")
-        apply_btn.clicked.connect(self.apply)
-        grid.addWidget(apply_btn, 15, 2)
+            self._ring_cells[mode] = cell
+        self._note = QLabel("Precision mode consumes <b>both</b> the Touch and Press fields, "
+                            "and cannot be a pie key.")
+        self._apply_btn = QPushButton("Apply bindings")
+        self._apply_btn.clicked.connect(self.apply)
+        self._place()
         self.restyle()
-        key = lambda i: (self.touches[i], self.presses[i], self.regs[i], self.tp[i], self.pp[i], self.prms[i])
-        chain = ([w for i in range(4) for w in key(i)] + [w for m in range(4) for w in self.rings[m]]
-                 + [w for i in range(4, 8) for w in key(i)] + [apply_btn])
-        for a, b in zip(chain, chain[1:]):           # Tab follows the rows as drawn: the ring modes sit
-            QWidget.setTabOrder(a, b)                # between keys 4 and 5, but were built after key 8
         for w in list(self.touches.values()) + list(self.presses.values()):
             w.textEdited.connect(lambda: setattr(self, "dirty", True))
         for w in list(self.tp.values()) + list(self.pp.values()) + list(self.prms.values()):
@@ -852,6 +861,79 @@ class PadTab(QWidget):
         for pair in self.rings.values():
             for w in pair:
                 w.textEdited.connect(lambda: setattr(self, "dirty", True))
+
+    def _place(self):
+        """Every widget into its cell for the tablet's turn. Right-handed: the
+        key pictures on the left, key 1 on top. Turned: the table mirrored and
+        upside down, as the pad sits on the desk - the pictures on the right,
+        key 8 on top, the ring still between the 4th and the 5th key from the
+        top, the lights of its pictures turned. A move, never a rebuild: each
+        row keeps its own key, and an edit not applied yet stays in its box."""
+        grid, t = self.grid, self.turned
+        while grid.count():
+            grid.takeAt(0)                           # the widgets stay; only their cells go
+        col = lambda c, span=1: 6 - c - span if t else c   # mirrored: columns c..c+span-1 -> 6-c-span..5-c
+
+        def key_row(idx):
+            pos = 7 - idx if t else idx              # turned: key 8 on top
+            return pos + 2 if pos < 4 else pos + 6   # the ring sits between the 4th and the 5th key
+
+        for c in range(6):
+            grid.setColumnStretch(c, 0)
+        grid.setColumnStretch(col(1), 2)
+        grid.setColumnStretch(col(2), 3)
+        for head, c, span in self._heads:
+            grid.addWidget(head, 0, col(c, span), 1, span, Qt.AlignmentFlag.AlignHCenter)
+        self._side.setText("(on the right side)" if t else "(on the left side)")
+        grid.addWidget(self._side, 1, col(0), Qt.AlignmentFlag.AlignHCenter)
+        for sub, c in self._subs:
+            grid.addWidget(sub, 1, col(c), Qt.AlignmentFlag.AlignHCenter)
+        grid.addWidget(self._info, 1, col(4), Qt.AlignmentFlag.AlignHCenter)
+        way = QBoxLayout.Direction.RightToLeft if t else QBoxLayout.Direction.LeftToRight
+        for idx in range(8):
+            row = key_row(idx)
+            grid.addWidget(self._pics[idx], row, col(0), Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(self.touches[idx], row, col(1))
+            grid.addWidget(self.presses[idx], row, col(2))
+            grid.addWidget(self.regs[idx], row, col(3))
+            self._pies[idx].layout().setDirection(way)   # the Touch tick stays nearer the key picture
+            grid.addWidget(self._pies[idx], row, col(4), Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(self.prms[idx], row, col(5), Qt.AlignmentFlag.AlignCenter)
+        for mode in range(4):
+            self._ring_pics[mode].setPixmap(ring_icon(mode + 1, t))
+            grid.addWidget(self._ring_pics[mode], mode + 6, col(0), Qt.AlignmentFlag.AlignCenter)
+            self._ring_cells[mode].layout().setDirection(way)   # boxes[0] stays the clockwise one
+            grid.addWidget(self._ring_cells[mode], mode + 6, col(1, 2), 1, 2)
+        grid.addWidget(self._note, 14, 0, 1, 6)
+        grid.addWidget(self._apply_btn, 15, col(2))
+        key = lambda i: [self.touches[i], self.presses[i], self.regs[i], self.tp[i], self.pp[i], self.prms[i]]
+        drawn = (lambda ws: ws[::-1]) if t else (lambda ws: ws)   # each row left to right, as drawn
+        keys = [drawn(key(i)) for i in (range(7, -1, -1) if t else range(8))]
+        ring = [drawn(list(self.rings[m])) for m in range(4)]
+        chain = [w for ws in keys[:4] + ring + keys[4:] for w in ws] + [self._apply_btn]
+        for a, b in zip(chain, chain[1:]):           # Tab follows the table as drawn: the ring modes
+            QWidget.setTabOrder(a, b)                # sit between the 4th and the 5th key row
+
+    def set_left_handed(self, on):
+        """The Left-handed box: KDE's setting at once, for the cable and for
+        Bluetooth (never a profile key), then the table turned in place."""
+        sysname = self.sysname
+        if not sysname or "true" not in busget(f"{MGR}/{sysname}", "tabletTool"):
+            sysname = detect_devices()[2]            # a bus switch renumbers the pen: never a stale node
+        notes = []
+        try:
+            wacom_profiles.apply_left_handed(on, self.pen, sysname, notes.append)
+        except RuntimeError as err:                  # kwriteconfig6 refused: the box goes back
+            self.left.blockSignals(True)
+            self.left.setChecked(not on)
+            self.left.blockSignals(False)
+            QMessageBox.warning(self, "Wacom Center", f"Left-handed mode was not saved.\n{err}")
+            return
+        self.sysname = sysname or self.sysname
+        self.turned = on
+        self._place()
+        if notes:
+            QMessageBox.information(self, "Wacom Center", "\n".join(notes))
 
     def confirm_switch(self):
         """A switch asks Apply, Discard or Cancel when this tab has edits not

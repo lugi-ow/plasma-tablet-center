@@ -53,9 +53,12 @@ The steps
 
 6. Run the command from step 4 again. No OutputArea line appears now.
 
-7. Remove the record that plasma-wacom-center keeps:
+7. Move the record that plasma-wacom-center keeps to the Trash:
 
-       rm -rf ~/.local/state/tabprec
+       gio trash ~/.local/state/tabprec
+
+   Nothing appears. If a line that ends with "No such file or directory"
+   appears, there was no record. That is also correct.
 
 8. Switch the tablet on.
 

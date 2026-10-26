@@ -1,13 +1,14 @@
 #!/bin/bash
 # tests/run_all.sh - every gate in one go: compile every Python file,
 # syntax-check every shell script, the map gate (tests/check_map.py), then the
-# four rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
+# five rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
 # reader and a fake overlay), test_size.sh (the ring script with a stub toggle
 # and a fake preview), test_hover.py (the daemon with a named pipe as the
-# pad, a fake pen, fake overlays and a fake toggle) and test_profiles.py
+# pad, a fake pen, fake overlays and a fake toggle), test_profiles.py
 # (wacom_profiles.py, Qt-free, with stubbed kreadconfig6/kwriteconfig6/qdbus6
-# wrapping the real binaries). Run from anywhere; needs python3 and bash only
-# - no Qt, no tablet, no KWin. Exit 0 = all green.
+# wrapping the real binaries) and test_center.py (the Pad buttons tab offscreen,
+# skipped without PyQt6 like the import smoke). Run from anywhere; needs python3
+# and bash - no tablet, no KWin, no window. Exit 0 = all green.
 set -o pipefail
 cd "$(dirname "$0")/.." || exit 1
 S="${TMPDIR:-/tmp}/tabprec-tests"        # the rigs wipe their own subfolders
@@ -42,6 +43,12 @@ echo "== hover rig"
 python3 tests/test_hover.py "$S" "$PWD/tablet-hover.py" 2>/dev/null | grep -E '^(FAIL|failures)' || red=1
 echo "== profiles rig"
 python3 tests/test_profiles.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== center rig"
+if python3 -c "import PyQt6" 2>/dev/null; then
+  python3 tests/test_center.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+else
+  echo "PyQt6 absent - skipped"
+fi
 
 echo
 [ "$red" -eq 0 ] && echo "ALL GATES GREEN" || echo "GATES RED"

@@ -20,7 +20,7 @@ September 2026.
 | `wacom_center.py` | the settings window |
 | `tablet-pad-probe.py` | prints the touch and press bytes of an unknown tablet |
 | `install.sh` | the deploy: scripts, shortcuts, autostart, the ring binding |
-| `uninstall.sh` | the reverse: daemon stopped, scripts, entries and shortcuts removed; settings kept |
+| `uninstall.sh` | the reverse: daemon stopped, scripts, entries and shortcuts removed, the pen ledgers moved to the Trash; settings kept |
 
 No compiled code, no kernel module. One daemon (`tablet-hover.py`), started
 by an autostart entry. Everything else is one process per key press.
@@ -161,6 +161,37 @@ placement works in. The XWayland source already reports the mapped
 position (its valuators are the screen scaled into 0..262143), so
 `--mapped` leaves it alone. The daemon applies the same correction to its
 warps through the area file's fractions.
+
+With Left-handed mode on (System Settings > Drawing Tablet > Pen), libinput
+turns the tablet 180 degrees before it maps the pen, but the kernel's evdev
+position does not turn (`KNOWLEDGE.md` has the facts). Both evdev readers ask
+KWin for the pen's `leftHanded` property and turn the reading to `1 - x`,
+`1 - y`, the frame that `outputArea` applies to. `tablet-pen-pos.py` asks once
+per run, for the node it read: the node's name (`eventNN`) is also its KWin
+sysname. The daemon keeps the answer and asks again only when a node set
+opens, or at a rescan after the pen node or `kcminputrc` changed (KWin writes
+the setting there). So a change in System Settings reaches it within one
+rescan (2 seconds), and no warp waits for D-Bus. The placement rule and the
+area math need no change. The XWayland source comes through KWin and is
+turned already.
+
+Wacom Center has its own box for the mode, at the top of the Pad buttons
+tab. The box writes `LeftHanded` into every `kcminputrc` group of the pen,
+plus the other connection's group from libwacom's `DeviceMatch`, then sets
+`leftHanded` live over D-Bus: System Settings writes only the connection in
+use. The setting is never part of a profile, because it is about the desk,
+not the program. Like System Settings, the box sets the pen only: the pad's
+own flag turns just the ring's absolute angle, which KWin's ring shortcuts
+never read. The table turns with the tablet, mirrored and upside down: the
+key pictures on the right, key 8 on top, the ring still between the fourth
+and the fifth key from the top. The widgets move; the table is not rebuilt,
+so each row keeps its own key (its libinput button number and its hidraw
+bit) and any edit not applied yet. A shortcut typed in a row thus lands on
+the key beside it. The ring keeps its directions, because a turn by 180
+degrees keeps clockwise clockwise; the lights in its mode pictures turn by
+180 degrees. Ticked while precision mode is on, the box leaves the area
+where it is: the pen covers the same rectangle, turned, until the next
+toggle places a new one.
 
 ## The overlay
 
@@ -553,7 +584,9 @@ chord there. The Precision column reads the toggle's current chord on
 every Apply — re-apply the Pad tab after the change. If you changed the
 two size chords, also retype them in their ring mode's boxes.
 `uninstall.sh` reverses the install; settings and the udev rule stay,
-with the removal lines printed.
+with the removal lines printed. The pen ledgers go to the Trash
+(`gio trash`) and are never deleted; without `gio`, or when it refuses,
+they stay and the script prints their folder.
 
 A command shortcut needs all three: `X-KDE-GlobalAccel-CommandShortcut=true`
 in the entry, `kbuildsycoca6`, and `doRegister` + `setForeignShortcut` on
@@ -606,8 +639,9 @@ Runtime files live in `$XDG_RUNTIME_DIR/tabprec/`. The pen ledgers live in
 ## Tests
 
 `tests/run_all.sh` runs every gate in about 85 seconds. It needs Python 3,
-bash and PyQt6 (for the import smoke, which is skipped without it): no
-tablet, no KWin, no window on the desktop. Exit 0 = all green.
+bash and PyQt6 (for the import smoke and the center rig, both skipped
+without it): no tablet, no KWin, no window on the desktop. Exit 0 = all
+green.
 
 | Gate | What it checks |
 |---|---|
@@ -616,8 +650,9 @@ tablet, no KWin, no window on the desktop. Exit 0 = all green.
 | `tests/check_map.py` | every top-level def, function and mode has a chunk marker, every marker has a bullet in `PROJECT_MAP.md`, and every bullet names a marker; a source file's header stays at 2 comment lines |
 | `tests/test_script.sh` (69 checks) | the toggle: on, move, resize around the centre with the clamp, the size limits (the defaults, no limit, one pixel), suspend, resume, off, the run lock, and a heal that waits for the pen without holding that lock. The write-back: a bus switch and a logout while on leave the pen on the whole screen, a base that is not the whole screen is put back as itself, the ledger fallback when the write-back cannot be proved, OFF with the tablet switched off, and a pause that resumes at the same area within `RECONNECT` seconds. A stubbed `busctl` that keeps `outputArea` per product AND seeds a device that has just appeared from `kcminputrc`, the way KWin does |
 | `tests/test_size.sh` (24 checks) | the ring script: the step and the size limits, `RING_STEP` from the conf, resize only with the mode on, the preview only with it off, nothing while the marker is fresh, and 12 ticks at once stepping `SCALE` exactly 12 times without losing a conf line |
-| `tests/test_hover.py` (88 checks) | the daemon: a named pipe plays the pad, a fake pen, fake overlays, a fake toggle. The ghost, the drag, `waiting` and `solid`, a conf edit mid-rest, `HOLD` 0, the long press and what must not arm it, the heal that a node set starts, and the runtime dir and control pipe the daemon makes for itself at a fresh login, and the absence timer that pauses precision mode. A held touch chord and the ghost released when the tablet goes away, and a new heal when it returns. A chord held through a conf reload goes up at the reload, once. A node that refuses its first open is opened by a later rescan, and so is a node whose reads end under the same name. One heal at a time, and a failed heal is run again, 5 runs at most. A pen with no position yet, in the daemon's reader and in `tablet-pen-pos.py` (the pen node found by `BTN_TOOL_PEN`, then exit 1 without asking XWayland) |
-| `tests/test_profiles.py` (46 checks) | the profile library, Qt-free: a hostile profile (a shell payload in a value, an unknown key, a chord on the precision key, an oversized image, a 3 MB file that stops the switch with the live files untouched), the pie rule, the order of a switch's writes, owned conf keys kept, a 2026-09 fixture's round trip, the pressure writes with and without a connected pen, the conf lock timeout, a missing active profile recreated, a ring tick between two saves (the ring script run from a scratch copy beside a no-op preview), profile names. The real `kreadconfig6` and `kwriteconfig6` on a scratch `kcminputrc`, logged by stubs, with a dead D-Bus address so `--notify` reaches no live session |
+| `tests/test_hover.py` (95 checks) | the daemon: a named pipe plays the pad, a fake pen, fake overlays, a fake toggle. The ghost, the drag, `waiting` and `solid`, a conf edit mid-rest, `HOLD` 0, the long press and what must not arm it, the heal that a node set starts, and the runtime dir and control pipe the daemon makes for itself at a fresh login, and the absence timer that pauses precision mode. A held touch chord and the ghost released when the tablet goes away, and a new heal when it returns. A chord held through a conf reload goes up at the reload, once. A node that refuses its first open is opened by a later rescan, and so is a node whose reads end under the same name. One heal at a time, and a failed heal is run again, 5 runs at most. A pen with no position yet, in the daemon's reader and in `tablet-pen-pos.py` (the pen node found by `BTN_TOOL_PEN`, then exit 1 without asking XWayland). Left-handed mode: both pen readers turn the kernel's position (the one-shot reader before `--mapped`, the daemon's warp before the area), the XWayland position stays as it is, and KWin is asked again only after a change |
+| `tests/test_profiles.py` (48 checks) | the profile library, Qt-free: a hostile profile (a shell payload in a value, an unknown key, a chord on the precision key, an oversized image, a 3 MB file that stops the switch with the live files untouched), the pie rule, the order of a switch's writes, owned conf keys kept, a 2026-09 fixture's round trip, the pressure writes with and without a connected pen, Left-handed mode written for both connections with nothing live while disconnected, and its state read from KWin first, the conf lock timeout, a missing active profile recreated, a ring tick between two saves (the ring script run from a scratch copy beside a no-op preview), profile names. The real `kreadconfig6` and `kwriteconfig6` on a scratch `kcminputrc`, logged by stubs, with a dead D-Bus address so `--notify` reaches no live session |
+| `tests/test_center.py` (5 checks) | the Pad buttons tab offscreen, with the profile rig's stubs: the turned table (key 8's picture at the far right of the top row, the Precision tick at the far left), a shortcut typed in the top row landing on key 8 when turned and on key 1 when not, the Left-handed box turning the table in place (an edit not applied yet moves with its row) and writing both connections and the live property, and the ring's mode-1 light turned to the upper right |
 
 Not part of the gate: `tests/add_markers.py` puts a chunk marker above every
 new def, function or mode (idempotent); `tests/check_map.py` imports its rule

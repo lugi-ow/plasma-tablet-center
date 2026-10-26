@@ -20,6 +20,7 @@ AREA = RD / "area"                  # "X Y W H DIM SW SH FX FY FW FH" of the map
 FIFO = RD / "overlay.fifo"          # the live overlay's geometry pipe (tablet-overlay.py --fifo)
 MARK = RD / "relocate"              # kept fresh while the overlay follows the pen: the toggle moves (< 3 s old) instead of switching off
 CTL = RD / "hover.ctl"              # a line here = re-read the conf (Wacom Center pokes it on Apply)
+KCMINPUTRC = CONF.with_name("kcminputrc")   # KWin writes the pen's Left-handed mode here: turn_poll watches its stamp
 DIR = Path(__file__).resolve().parent
 SHOW_DELAY = 0.06                    # touch sense must hold this long before the ghost (debounce)
 HOLD_DEFAULT = 0.15                  # ...and this long before a relocation (precision on); conf key HOLD, Wacom Center field
@@ -29,6 +30,7 @@ GRACE = 10.0                        # seconds the tablet may be gone with precis
 TICK = 0.03                          # poll period while a rectangle follows the pen or a press is being judged
 HEAL_TRIES = 5                      # heal runs per tablet appearance: a run that fails is tried again at the next rescan
 HEAL = {"proc": None, "left": 0, "due": False}   # the heal run in flight, the tries left, a run owed
+TURN = {"key": None, "on": False}   # KDE's Left-handed mode on the pen, and the (node, kcminputrc stamp) it was read for
 BUS = {"0003": "usb", "0005": "bt"}
 
 # ── chunk: FAMILIES
@@ -150,9 +152,9 @@ def wacom_nodes():
     return found
 
 
-# ── chunk: pen_open
-def pen_open():
-    """fd of the tablet's Pen evdev node (uaccess ACL), or None."""
+# ── chunk: pen_node
+def pen_node():
+    """The tablet's Pen evdev node name (eventNN), which is also the pen's KWin sysname; None = no pen."""
     try:
         blocks = open("/proc/bus/input/devices", encoding="utf-8", errors="replace").read().split("\n\n")
     except OSError:
@@ -161,11 +163,56 @@ def pen_open():
         if 'Name="Wacom' in block and 'Pen"' in block:
             match = re.search(r"Handlers=.*?(event\d+)", block)
             if match:
-                try:
-                    return os.open(f"/dev/input/{match.group(1)}", os.O_RDONLY | os.O_NONBLOCK)
-                except OSError:
-                    return None
+                return match.group(1)
     return None
+
+
+# ── chunk: pen_open
+def pen_open():
+    """fd of the tablet's Pen evdev node (uaccess ACL), or None."""
+    node = pen_node()
+    try:
+        return os.open(f"/dev/input/{node}", os.O_RDONLY | os.O_NONBLOCK) if node else None
+    except OSError:
+        return None
+
+
+# ── chunk: left_handed
+def left_handed(sysname):
+    """KWin's leftHanded for the pen node `sysname`: True, False, or None when KWin gives no answer.
+    KDE's Left-handed mode (System Settings > Drawing Tablet > Pen) makes libinput turn the tablet
+    180 degrees before KWin maps it; the kernel's position, which pen_norm reads, does not turn."""
+    try:
+        out = subprocess.run(["busctl", "--user", "get-property", "org.kde.KWin",
+                              f"/org/kde/KWin/InputDevice/{sysname}", "org.kde.KWin.InputDevice", "leftHanded"],
+                             capture_output=True, text=True, timeout=1).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"b true": True, "b false": False}.get(out)
+
+
+# ── chunk: turn_poll
+def turn_poll():
+    """TURN kept right off the hot path: run when a node set opens and at every rescan, it asks KWin
+    only when the pen node or kcminputrc (KWin writes the setting there) changed, or the last ask got
+    no answer. A change in System Settings reaches the pen within one rescan."""
+    node = pen_node()
+    if node is None:
+        return                                # no pen node: nothing to ask about
+    try:
+        st = KCMINPUTRC.stat()
+        stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    if (node, stamp) == TURN["key"]:
+        return
+    on = left_handed(node)
+    if on is None:
+        TURN["key"] = None                    # KWin does not list the pen yet: asked again at the next rescan
+        return
+    if on != TURN["on"]:
+        log(f"left-handed mode {'on: pen positions turned 180 degrees' if on else 'off'} ({node})")
+    TURN["on"], TURN["key"] = on, (node, stamp)
 
 
 # ── chunk: pen_norm
@@ -174,7 +221,8 @@ def pen_norm(fd):
     X, Y and the tool key whenever the pen leaves proximity, so a lifted pen has no evdev position -
     same minimum-on-both-axes reading as a node that has not reported yet. Taken for a position, that
     sent the ghost, the drag and the mouse warp to the top-left corner. So out of proximity AND on the
-    minimum together mean no position at all, never the corner."""
+    minimum together mean no position at all, never the corner. Turned 180 degrees while KDE's
+    Left-handed mode is on (TURN): the frame KWin maps, for every caller."""
     axes = []
     for code in (0, 1):                      # ABS_X, ABS_Y
         buf = bytearray(24)
@@ -193,7 +241,8 @@ def pen_norm(fd):
         return None
     if not keys[40] & 1 and all(value == lo for value, lo, _ in axes):
         return None
-    return tuple((value - lo) / (hi - lo) for value, lo, hi in axes)
+    pos = tuple((value - lo) / (hi - lo) for value, lo, hi in axes)
+    return (1 - pos[0], 1 - pos[1]) if TURN["on"] else pos   # libinput inverts both axes (invert_axis)
 
 
 # ── chunk: toggle
@@ -548,6 +597,8 @@ def watch(conf, follower, warper=None):
             os.close(ctl)
         return False
     heal()                            # a tablet just appeared: a precision rectangle KWin kept for its pen is put right
+    TURN["key"] = None                # ...and its Left-handed mode is asked again (KDE keeps it per cable and Bluetooth)
+    turn_poll()
     pending = {}                      # fd -> time the touch began; None once acted on
     held = set()                      # fds whose key was pressed: nothing more until the finger leaves it
     down = {}                         # fd -> last press-byte value
@@ -709,6 +760,7 @@ def watch(conf, follower, warper=None):
                 if warper is not None:
                     warper.ensure()                 # a virtual mouse lost or never created: another try
                 heal_poll()                         # a heal that failed gets its next try
+                turn_poll()                         # Left-handed mode changed in System Settings: one rescan
                 if wacom_nodes() != nodes:
                     return True                 # bus switch or tablet gone: rescan
                 missed = [node for node in missed if not attach(node, quiet=True)]

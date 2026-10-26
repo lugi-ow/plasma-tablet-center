@@ -38,10 +38,28 @@ def screen_size():
     return x11.XDisplayWidth(dpy, screen), x11.XDisplayHeight(dpy, screen), x11, dpy
 
 
+# ── chunk: left_handed
+def left_handed(sysname):
+    """KDE's Left-handed mode on the pen node `sysname` (eventNN, also its KWin sysname). With it on,
+    libinput turns the tablet 180 degrees before KWin maps it; the kernel's position does not turn.
+    No answer from KWin = not turned."""
+    try:
+        out = subprocess.run(
+            ["busctl", "--user", "get-property", "org.kde.KWin", f"/org/kde/KWin/InputDevice/{sysname}",
+             "org.kde.KWin.InputDevice", "leftHanded"],
+            capture_output=True, text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as err:
+        trace(f"leftHanded: busctl: {err}")
+        return False
+    trace(f"leftHanded: {sysname} says {out!r}")
+    return out == "b true"
+
+
 # ── chunk: evdev_pen_norm
 def evdev_pen_norm(devices="/proc/bus/input/devices", dev_dir="/dev/input"):
-    """Normalized (0..1) pen position from the kernel. None: no pen node, or no access to it.
-    OUT_OF_RANGE: the pen has no evdev position right now. The arguments are for the rig."""
+    """Normalized (0..1) pen position from the kernel, turned 180 degrees when KDE's Left-handed mode is
+    on: the frame KWin maps. None: no pen node, or no access to it. OUT_OF_RANGE: the pen has no evdev
+    position right now. The arguments are for the rig."""
     try:
         blocks = open(devices, encoding="utf-8", errors="replace").read().split("\n\n")
     except OSError:
@@ -84,12 +102,16 @@ def evdev_pen_norm(devices="/proc/bus/input/devices", dev_dir="/dev/input"):
         if not keys[BTN_TOOL_PEN // 8] >> BTN_TOOL_PEN % 8 & 1 and all(value == lo for value, lo, _ in axes):
             trace("evdev: out of proximity and on the minimum of both axes: the kernel zeroed it on exit")
             return OUT_OF_RANGE                      # a lifted pen has no evdev position - the kernel zeroes X, Y and the tool key
-        return tuple((value - lo) / (hi - lo) for value, lo, hi in axes)
+        pos = tuple((value - lo) / (hi - lo) for value, lo, hi in axes)
     except OSError as err:
         trace(f"evdev ioctl: {err}")
         return None
     finally:
         os.close(fd)
+    if left_handed(os.path.basename(node)):          # libinput inverts both axes (evdev-tablet.c invert_axis)
+        pos = (1 - pos[0], 1 - pos[1])
+        trace(f"evdev: left-handed mode, turned -> {pos}")
+    return pos
 
 
 # ── chunk: XIAnyClassInfo
@@ -208,7 +230,7 @@ def main(argv=None):
         trace("out of range: exit 1, the caller uses the mouse")
         sys.exit(1)
     if pos is None:
-        pos = xwayland_stylus_norm(scr[3])
+        pos = xwayland_stylus_norm(scr[3])           # comes through KWin: already turned for left-handed mode
         source = "xwayland"
     if pos is None:
         sys.exit(1)

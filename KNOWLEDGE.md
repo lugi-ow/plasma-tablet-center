@@ -118,6 +118,29 @@ never by a bare name substring: "pen" is also in "Suspend". (The daemon's
 own reader matches the end of a Wacom device name, `Pen"`, which that
 trap does not reach.)
 
+**Left-handed mode turns the tablet in libinput, never in the kernel.**
+With Left-handed mode on (System Settings > Drawing Tablet > Pen, KWin's
+`leftHanded` on the pen device), libinput reads each axis of the pen as
+`maximum - (value - minimum)` before the calibration, the tablet area and
+KWin's `outputArea` (`evdev-tablet.c`, `invert_axis`, libinput 1.31). The
+mapping thus works on the turned tablet, while the kernel's evdev position,
+which a toggle reads to place the area under the pen, stays unturned. Read
+raw, it put the area, the previews and the mouse warp on the opposite side
+of the screen; turn the reading the same way (`1 - x`, `1 - y`). More facts
+from the same sources. libinput applies a change only while the pen is out
+of proximity, so it starts at the next lift. KWin stores the setting per
+product id, so the USB and the Bluetooth connection keep one each (Wacom
+Center's box writes both, like the pressure curve). libinput also turns the
+pen when the tablet's touch surface has its own Left-handed mode on, and
+the pen's `leftHanded` then stays false. The pad keeps its button numbers,
+and the ring keeps its direction: a turn by 180 degrees leaves clockwise
+clockwise. KDE's box sets the pen only. The pad has a Left-handed flag of
+its own, which turns only the ring's absolute angle (libinput adds 180
+degrees); KWin's ring shortcuts use the direction of a turn, so they never
+see it. The Orientation box on the Display tab needs a
+calibration matrix, which libinput gives only to display tablets, so on an
+Intuos it reads "Not Applicable".
+
 **The mouse pointer and the pen cursor are two different things.** KWin
 keeps a pointer position for the mouse and a separate cursor for the
 tablet. Everything that asks the compositor for "the pointer" gets the
@@ -195,6 +218,17 @@ the refused node stayed closed until the bus changed: no preview, no pies,
 no touch chords, while the other node and KWin's own shortcuts worked. A
 node that would not open is now tried again at every rescan, and so is a
 node whose read ends while its name stays.
+
+**The tablet ends a Bluetooth connection that nobody uses.** Switched on
+over Bluetooth and then left alone, an Intuos Pro M disconnected after 17
+seconds. BlueZ reported `Device1.Disconnected` with
+`org.bluez.Reason.Remote` ("Connection terminated by remote user"), so the
+tablet ended the connection, not the computer. The tablet sent no HID
+report between the connect and the disconnect. In use, the same tablet
+stayed connected for 33 minutes. The toolkit opens every tablet node
+read-only, and BlueZ's `IdleTimeout` in `/etc/bluetooth/input.conf` stays
+at 0, which means no timeout. The timer is in the tablet, and Wacom does
+not document it. (Kubuntu 26.04, BlueZ 5.85, October 2026.)
 
 **Overlays that must not eat input**: a Qt window with
 `Qt.WindowTransparentForInput` on the layer-shell overlay layer

@@ -221,6 +221,24 @@ lines_conn = log_lines_from(pos)
 check("pressure-writes: busctl set-property logged once connected",
       any("busctl" in l and "set-property" in l and "pressureCurve" in l for l in lines_conn))
 
+# ======================================================= left-handed-writes
+reset_kcminputrc(f"[Libinput][{VENDOR}][{PROD_USB}][{PEN}]\nOutputArea=0,0,1,1\n")
+libwacom_tablet_file()
+pos = log_pos()
+getattr(wp, "apply_left_handed", lambda *a, **k: None)(True, PEN, None)     # the tablet asleep: no live pen
+lines_lh = log_lines_from(pos)
+check("left-handed-writes: one tick holds on both connections (855 written, the 864 sibling made), "
+      "and nothing live while disconnected",
+      wp.kreadconfig6(["Libinput", VENDOR, PROD_USB, PEN], "LeftHanded") == "true"
+      and wp.kreadconfig6(["Libinput", VENDOR, PROD_BT, PEN], "LeftHanded") == "true"
+      and not any("set-property" in l for l in lines_lh))
+state = getattr(wp, "left_handed_state", lambda *a: None)
+os.environ["STUB_LEFT"] = "false"            # KWin says otherwise: it is what the pen does now
+said_live = state(PEN, SYSNAME)
+del os.environ["STUB_LEFT"]
+check("left-handed-state: KWin's live answer wins; with none, any pen group's LeftHanded=true",
+      said_live is False and state(PEN, SYSNAME) is True and state(PEN, None) is True)
+
 # ============================================================== lock-timeout
 reset_data()
 reset_kcminputrc()

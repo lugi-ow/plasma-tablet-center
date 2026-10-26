@@ -318,6 +318,49 @@ def apply_pressure(curve, rmin, rmax, pen_name, sysname, status=None):
             busctl_set(sysname, prop, sig, value)
 
 
+# ── chunk: apply_left_handed
+def apply_left_handed(on, pen_name, sysname, status=None):
+    """KDE's Left-handed mode for the pen (libinput turns the tablet 180 degrees): LeftHanded into
+    every kcminputrc pen group PLUS the sibling transport's (created if absent), so one tick holds
+    on the cable and on Bluetooth - System Settings writes only the connected one. Then the live
+    D-Bus property when connected. The pad's own flag stays KDE's: the ring rebinds use the turn's
+    delta, which a 180 degree turn keeps. Never in a profile: it is the desk, not the app."""
+    def note(msg):
+        if status:
+            status(msg)
+
+    value = "true" if on else "false"
+    pairs = pen_groups_in_kcminputrc(pen_name) if pen_name else []
+    if not pairs and not sysname:
+        note("Left-handed mode applies after the pen connects once.")
+        return
+    libwacom_dir = os.environ.get("WCC_LIBWACOM_DIR", "/usr/share/libwacom")
+    extra = libwacom_sibling_pairs(*pairs[0], libwacom_dir) if pairs else None
+    if extra:
+        for pair in extra:
+            if pair not in pairs:
+                pairs.append(pair)
+    elif len(pairs) == 1:
+        note("Left-handed mode for the other connection (USB or Bluetooth) applies "
+             "after it connects once and you tick the box again.")
+    for vendor, product in pairs:
+        kwrite_literal(["Libinput", vendor, product, pen_name], "LeftHanded", value)
+    if sysname:
+        busctl_set(sysname, "leftHanded", "b", value)
+
+
+# ── chunk: left_handed_state
+def left_handed_state(pen_name, sysname):
+    """Left-handed mode as KWin has it now, else as any of the pen's kcminputrc groups holds it."""
+    if sysname:
+        live = busctl_get(sysname, "leftHanded")
+        if live in ("true", "false"):
+            return live == "true"
+    return bool(pen_name) and any(
+        kreadconfig6(["Libinput", vendor, product, pen_name], "LeftHanded") == "true"
+        for vendor, product in pen_groups_in_kcminputrc(pen_name))
+
+
 # ── chunk: resolve_pad_name
 def resolve_pad_name(live_pad_name):
     """live_pad_name if KWin found one; else profiles.ini's recorded pad,

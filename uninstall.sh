@@ -32,14 +32,20 @@ fi
 echo "== 2/5 Stopping the daemon"
 pkill -f "$BIN/tablet-hover.py" 2>/dev/null && echo "stopped" || echo "was not running"
 
-echo "== 3/5 Removing the scripts from $BIN and the pen ledgers"
+echo "== 3/5 Removing the scripts from $BIN; the pen ledgers go to the Trash"
 for f in tablet-precision.sh tablet-precision-size.sh tablet-pen-pos.py \
          tablet-overlay.py tablet-overlay.qml tablet-size-preview.py \
          tablet-pointer-warp.py tablet-hover.py tablet-pad-probe.py \
          wacom_center.py wacom_profiles.py tablet-pie.sh tablet-size-preview.qml; do
     rm -f "$BIN/$f"                       # the last two: files older installs left behind
 done
-rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/tabprec"   # the pen ledgers (tablet-precision.sh heal)
+# The pen ledgers (tablet-precision.sh heal) go to the Trash, never deleted: a folder of records
+# the user can still get back. No gio, or a refusal: the folder stays and its path is printed.
+LEDGERS="${XDG_STATE_HOME:-$HOME/.local/state}/tabprec"
+if [ -e "$LEDGERS" ]; then
+    gio trash "$LEDGERS" 2>/dev/null && echo "the pen ledgers: moved to the Trash" ||
+        echo "the pen ledgers stay in $LEDGERS: move that folder to the Trash yourself"
+fi
 
 echo "== 4/5 Removing the launcher entries and their shortcuts"
 for e in net.local.tabprec-toggle net.local.tabprec-bigger \

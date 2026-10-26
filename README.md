@@ -34,7 +34,13 @@ MobileStudio Pro).
 - **Touch chords.** Rest a finger on a pad key and the key holds a chord
   for you - rest for Ctrl while you sculpt in Blender, lift to release.
 - **Wacom Center.** A settings window for the area size, the dim strength,
-  the times, the ring's four modes, and every pad key.
+  the times, the ring's four modes, every pad key, and the pen's buttons
+  and pressure curve.
+- **Profiles.** Save your Wacom Center settings as a profile, and switch
+  between profiles with one click.
+- **Left-handed use.** Use the tablet turned around, with the keys on the
+  right. One box in Wacom Center sets left-handed mode for the cable and
+  for Bluetooth.
 
 Precision mode has a solid amber border. A preview has a dashed border that
 moves.
@@ -160,7 +166,8 @@ tick angle, and a switch for the ring direction. The Pad buttons tab is the whol
 table: each key's Touch and Press shortcuts, its own Touch register, the
 ring's four modes, the Pie keys column (one tick per side), and the
 Precision column that names the precision key. Hover a column title for
-the explanation.
+the explanation. The Left-handed box above the table is for a tablet
+turned around (see "Left-handed use").
 
 ## Pen
 
@@ -188,6 +195,21 @@ Click "Apply" to save the tab.
 
 The tab works even with the pen disconnected. Set your bindings and
 your curve now. They take effect once the pen connects.
+
+## Left-handed use
+
+To use the tablet turned around, with the keys on the right, tick
+"Left-handed" at the top of Wacom Center's Pad buttons tab. Wacom Center
+sets KDE's Left-handed mode for the cable and for Bluetooth at once.
+(System Settings > Drawing Tablet > Pen has the same box, but it sets
+only the connection that you use at that time.) The precision area, the
+touch preview and the pie menus follow it. The change starts when you
+next lift the pen away from the tablet.
+
+The Pad buttons table turns with the tablet: the keys on the right side,
+key 8 on top. Each row stays with its own key, so a shortcut that you
+type in a row goes to the key that you see beside it. The ring keeps its
+directions: clockwise stays clockwise.
 
 ## Profiles
 
@@ -247,11 +269,12 @@ a shortcut made of F-keys and modifiers, and use each one once.
   other tablets the toggle and the ring still work. For a pie there, type
   the menu's shortcut into the key's Press box and leave its Pie box
   unticked. The menu then opens at the mouse pointer, not under the pen.
-- Left-handed mode (the tablet turned around) is not supported. With it
-  on, the area, the previews and the pie menu land on the opposite side
-  of the screen.
 - A pen click does not move the focus to another window. This is a Plasma
   6.6 bug (KDE bug 498386), not something this project can fix.
+- Over Bluetooth, the tablet switches itself off if you do not use it soon
+  after you switch it on. On an Intuos Pro M this happens within about 20
+  seconds. This is the tablet's own power saving, not something this
+  project does. Have the pen in your hand before you switch the tablet on.
 - If the pen reaches only a small part of the screen after an uninstall
   or a crash, [the rescue steps](RESCUE.txt) put it back.
 
@@ -272,6 +295,8 @@ It stops the daemon and removes what the install put on your system:
 - the launcher entries, from `~/.local/share/applications`
 - the autostart entry, from `~/.config/autostart`
 - their shortcuts, from KDE's shortcut service and its config file
+- the pen records in `~/.local/state/tabprec`: these go to the Trash,
+  so you can get them back
 
 Your settings stay in `~/.config/tabprec.conf`; the script prints that
 path and the one `sudo` line that removes the permission rule from
