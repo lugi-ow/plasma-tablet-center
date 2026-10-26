@@ -26,7 +26,7 @@ import wacom_profiles
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tabprec.conf"
 TOGGLE = Path.home() / ".local/bin/tablet-precision.sh"
 MODIFIER_ONLY = {"Shift", "Control", "Ctrl", "Alt", "Meta"}
-RING_DEFAULT = ("Meta+Shift+F10", "Meta+Shift+F9", 600)   # bigger, smaller, KWin threshold = degrees x 120: every 5-degree step
+RING_DEFAULT = ("Meta+Shift+F9", "Meta+Shift+F10", 600)   # up = counter-clockwise: smaller; down = clockwise: bigger; threshold = degrees x 120
 KW, MGR, IF = "org.kde.KWin", "/org/kde/KWin/InputDevice", "org.kde.KWin.InputDevice"
 AMBER = "#e6a817"                        # the overlay border's amber: the waiting look
 RED = "#da4453"                          # Breeze negative: a row consumed by precision mode
@@ -239,9 +239,9 @@ def kwrite_group(groups, key, seq):
 
 # ── chunk: ring_read
 def ring_read(pad, mode=0):
-    """(bigger chord, smaller chord, degrees per tick) of one ring mode's
-    binding in kcminputrc (KWin groups 0-3), or None when that mode is
-    unbound. KWin stores degrees x 120."""
+    """(up chord, down chord, degrees per tick) of one ring mode's binding
+    in kcminputrc (KWin groups 0-3), or None when that mode is unbound.
+    KWin stores degrees x 120."""
     if pad:
         out = wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", pad, str(mode)], "0").split(",")
         if len(out) == 4 and out[0] == "AxisKey":
@@ -254,10 +254,10 @@ def ring_read(pad, mode=0):
 
 # ── chunk: ring_write
 def ring_write(pad, up, down, degrees, mode=0):
-    """Bind one ring mode: UP fires every DEGREES of travel one way, DOWN the
-    other way. Both chords empty = the mode unbound. KWin compares its
-    threshold with degrees x 120 and the ring reports 5-degree steps, so 5
-    is the finest tick."""
+    """Bind one ring mode: UP fires every DEGREES of counter-clockwise travel,
+    DOWN of clockwise travel (an Intuos Pro M, 2026-10-26). Both chords
+    empty = the mode unbound. KWin compares its threshold with degrees x 120
+    and the ring reports 5-degree steps, so 5 is the finest tick."""
     if not pad:
         return
     if not up and not down:
@@ -385,7 +385,8 @@ class PrecisionTab(QWidget):
         self.ring_degrees.setValue(max(1, round(degrees)))
         self.ring_degrees.setToolTip("The ring reports 5° steps, so 5 is the finest tick; 1 to 5 behave the same.")
         self.ring_swap = QCheckBox("Swap the ring direction")
-        self.ring_swap.setChecked(bound_up == RING_DEFAULT[1])   # the smaller chord up = swapped; set BEFORE the signal
+        self.ring_swap.setToolTip("Unticked, a clockwise turn makes the area bigger.")
+        self.ring_swap.setChecked(bound_up == RING_DEFAULT[1])   # the bigger chord up = swapped; set BEFORE the signal
         ring_row = QHBoxLayout()                                   # is wired, or every window open rewrote the ring
         ring_row.addWidget(QLabel("Ring: each tick changes the size by"))
         ring_row.addWidget(self.ring_step)
@@ -467,8 +468,9 @@ class PrecisionTab(QWidget):
         on whichever mode CURRENTLY carries the precision-size pair - looked
         up fresh, since the Pad tab's Apply may have moved it since this tab
         opened. The pair is written in the order the Swap box states (ticked
-        = the smaller chord on the up side), never as a flip of what is bound:
-        that flipped on every angle change too."""
+        = the bigger chord on the up side, so a counter-clockwise turn grows
+        the area), never as a flip of what is bound: that flipped on every
+        angle change too."""
         mode, _ = precision_ring_mode(self.pad)
         up, down = ((RING_DEFAULT[1], RING_DEFAULT[0]) if self.ring_swap.isChecked()
                     else (RING_DEFAULT[0], RING_DEFAULT[1]))
@@ -829,7 +831,7 @@ class PadTab(QWidget):
             pair = QHBoxLayout(cell)
             pair.setContentsMargins(0, 0, 0, 0)
             boxes = []
-            for way in ("clockwise", "counter-clockwise"):
+            for way in ("counter-clockwise", "clockwise"):   # field 1 (up) fires on a counter-clockwise turn
                 turn = QLineEdit()
                 turn.setPlaceholderText(way)
                 turn.setToolTip(RING_TIP)
@@ -902,7 +904,7 @@ class PadTab(QWidget):
         for mode in range(4):
             self._ring_pics[mode].setPixmap(ring_icon(mode + 1, t))
             grid.addWidget(self._ring_pics[mode], mode + 6, col(0), Qt.AlignmentFlag.AlignCenter)
-            self._ring_cells[mode].layout().setDirection(way)   # boxes[0] stays the clockwise one
+            self._ring_cells[mode].layout().setDirection(way)   # boxes[0] stays the counter-clockwise one
             grid.addWidget(self._ring_cells[mode], mode + 6, col(1, 2), 1, 2)
         grid.addWidget(self._note, 14, 0, 1, 6)
         grid.addWidget(self._apply_btn, 15, col(2))

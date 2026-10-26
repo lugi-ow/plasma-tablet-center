@@ -97,6 +97,9 @@ that reaches the threshold, then restarts from the current position. The
 Intuos Pro ring reports 5-degree steps, so any threshold up to 600 fires on
 every step (72 ticks per turn) and 1800 fires every 15 degrees. An earlier
 version of this note said 120 was 5 degrees and 360 was 15; it was wrong.
+KWin fires the up chord on a counter-clockwise turn and the down chord on a
+clockwise turn (an Intuos Pro M, October 2026). Wacom Center labelled the
+two boxes the other way round until then.
 
 **The pen's screen position is not exposed to scripts.** KWin's scripting
 `workspace.cursorPos` is hardwired to the mouse. Two usable sources instead,

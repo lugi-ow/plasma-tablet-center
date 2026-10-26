@@ -222,7 +222,7 @@ opens the pipe `O_RDWR`, so writers come and go without an EOF.
 `install.sh` binds the ring in `kcminputrc`:
 
     [ButtonRebinds][TabletRing][<pad name>][0]
-    0=AxisKey,Meta+Shift+F10,Meta+Shift+F9,600
+    0=AxisKey,Meta+Shift+F9,Meta+Shift+F10,600
 
 The threshold is not in degrees. KWin multiplies the degrees travelled since
 the last tick by 120 and fires one chord when the product reaches the
@@ -241,8 +241,14 @@ under 3 s old) does nothing.
 A fast swipe puts a dozen ticks in flight, one process each. Two rules make
 the queue collapse. The toggle reads the conf after it takes the lock, so a
 queued run applies the newest `SCALE`. A resize whose width is already on
-screen exits at once. libinput counts ring degrees counter-clockwise. The
-"Swap the ring direction" box in Wacom Center exchanges the two chords.
+screen exits at once. libinput counts ring degrees counter-clockwise, and
+KWin fires the first chord on a counter-clockwise turn (checked on an Intuos
+Pro M, October 2026). So the binding puts the smaller chord first, and a
+clockwise turn makes the area bigger. The "Swap the ring direction" box in
+Wacom Center exchanges the two chords. Installs from before October 2026
+put the bigger chord first, and Wacom Center shows them with the box
+ticked. The Pad buttons tab names each ring box after the turn that fires
+it.
 
 ## The pie menu
 
@@ -652,7 +658,7 @@ green.
 | `tests/test_size.sh` (24 checks) | the ring script: the step and the size limits, `RING_STEP` from the conf, resize only with the mode on, the preview only with it off, nothing while the marker is fresh, and 12 ticks at once stepping `SCALE` exactly 12 times without losing a conf line |
 | `tests/test_hover.py` (95 checks) | the daemon: a named pipe plays the pad, a fake pen, fake overlays, a fake toggle. The ghost, the drag, `waiting` and `solid`, a conf edit mid-rest, `HOLD` 0, the long press and what must not arm it, the heal that a node set starts, and the runtime dir and control pipe the daemon makes for itself at a fresh login, and the absence timer that pauses precision mode. A held touch chord and the ghost released when the tablet goes away, and a new heal when it returns. A chord held through a conf reload goes up at the reload, once. A node that refuses its first open is opened by a later rescan, and so is a node whose reads end under the same name. One heal at a time, and a failed heal is run again, 5 runs at most. A pen with no position yet, in the daemon's reader and in `tablet-pen-pos.py` (the pen node found by `BTN_TOOL_PEN`, then exit 1 without asking XWayland). Left-handed mode: both pen readers turn the kernel's position (the one-shot reader before `--mapped`, the daemon's warp before the area), the XWayland position stays as it is, and KWin is asked again only after a change |
 | `tests/test_profiles.py` (48 checks) | the profile library, Qt-free: a hostile profile (a shell payload in a value, an unknown key, a chord on the precision key, an oversized image, a 3 MB file that stops the switch with the live files untouched), the pie rule, the order of a switch's writes, owned conf keys kept, a 2026-09 fixture's round trip, the pressure writes with and without a connected pen, Left-handed mode written for both connections with nothing live while disconnected, and its state read from KWin first, the conf lock timeout, a missing active profile recreated, a ring tick between two saves (the ring script run from a scratch copy beside a no-op preview), profile names. The real `kreadconfig6` and `kwriteconfig6` on a scratch `kcminputrc`, logged by stubs, with a dead D-Bus address so `--notify` reaches no live session |
-| `tests/test_center.py` (5 checks) | the Pad buttons tab offscreen, with the profile rig's stubs: the turned table (key 8's picture at the far right of the top row, the Precision tick at the far left), a shortcut typed in the top row landing on key 8 when turned and on key 1 when not, the Left-handed box turning the table in place (an edit not applied yet moves with its row) and writing both connections and the live property, and the ring's mode-1 light turned to the upper right |
+| `tests/test_center.py` (7 checks) | Wacom Center offscreen, with the profile rig's stubs: the turned table (key 8's picture at the far right of the top row, the Precision tick at the far left), a shortcut typed in the top row landing on key 8 when turned and on key 1 when not, the Left-handed box turning the table in place (an edit not applied yet moves with its row) and writing both connections and the live property, the ring's mode-1 light turned to the upper right, a shortcut typed in a ring mode's "clockwise" box landing in the second field, and the default ring (the smaller chord first, Swap unticked) with an older binding read as Swap ticked |
 
 Not part of the gate: `tests/add_markers.py` puts a chunk marker above every
 new def, function or mode (idempotent); `tests/check_map.py` imports its rule

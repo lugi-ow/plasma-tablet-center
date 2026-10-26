@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# test_center.py <scratch dir> <repo dir> - the Pad buttons tab offscreen: the Left-handed box turns
-# the table with the tablet, and every row keeps its own key. Scratch XDG_* dirs, a dead D-Bus
-# address; the profiles rig's stubs run the real kreadconfig6/kwriteconfig6 on a scratch kcminputrc
+# test_center.py <scratch dir> <repo dir> - Wacom Center offscreen: the Left-handed box turns the
+# table with the tablet, every row keeps its own key, the ring's turn directions and default.
+# Scratch XDG_* dirs, a dead D-Bus address; the profiles rig's stubs run the real
+# kreadconfig6/kwriteconfig6 on a scratch kcminputrc
 # and the shared busctl stub plays KWin. Qt offscreen: no tablet, no window on the desktop.
 import os
 import shutil
@@ -129,6 +130,32 @@ plain_img = wc.ring_icon(1).toImage()
 check("C5 turned: ring mode 1's light sits upper right, where the turned tablet shows it (lower left unturned)",
       turned_img is not None and amber(turned_img, 15, 6) and not amber(turned_img, 6, 15)
       and amber(plain_img, 6, 15))
+
+# --- C: the ring's directions. KWin fires a mode's first chord (up) on a COUNTER-clockwise turn: Artem's
+#        ring holds F9 (smaller) first, and a clockwise turn grows his area (2026-10-26, A17-4) ---
+KCM.write_text(f"[Libinput][1386][855][{PEN}]\n")
+ring_tab = attempt(lambda: wc.PadTab(PAD, pen=PEN, sysname=SYSNAME))
+labelled = {b.placeholderText(): b for b in ring_tab.rings[1]} if ring_tab is not None else {}
+if set(labelled) == {"clockwise", "counter-clockwise"}:
+    labelled["clockwise"].setText("Meta+Shift+F7")
+    labelled["counter-clockwise"].setText("Meta+Shift+F6")
+    attempt(ring_tab.apply)
+check("C6 a shortcut typed in ring mode 2's \"clockwise\" box lands in the second field, the one a "
+      "clockwise turn fires",
+      wc.wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 1], "0")
+      == "AxisKey,Meta+Shift+F6,Meta+Shift+F7,600")
+
+KCM.write_text(f"[Libinput][1386][855][{PEN}]\n")             # no ring binding yet: a fresh install
+fresh = attempt(lambda: wc.PrecisionTab(1.6, PAD))
+fresh_ticked = attempt(lambda: fresh.ring_swap.isChecked())
+attempt(lambda: fresh.apply_ring())
+written = wc.wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 0], "0")
+KCM.write_text(f"[ButtonRebinds][TabletRing][{PAD}][0]\n0=AxisKey,Meta+Shift+F10,Meta+Shift+F9,600\n")
+older = attempt(lambda: wc.PrecisionTab(1.6, PAD))
+check("C7 by default a clockwise turn grows the area (the smaller chord first, Swap unticked), and an "
+      "older install's order (the bigger chord first) reads as Swap ticked",
+      fresh_ticked is False and written == "AxisKey,Meta+Shift+F9,Meta+Shift+F10,600"
+      and attempt(lambda: older.ring_swap.isChecked()) is True)
 
 print(f"failures: {fails}")
 sys.exit(1 if fails else 0)

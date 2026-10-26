@@ -21,9 +21,10 @@ MobileStudio Pro).
   screen back. The cursor does not jump, and the screen outside the area
   dims. The area has the shape of your tablet, so your strokes keep their
   proportions.
-- **Ring size control.** Turn the touch ring to make the area bigger or
-  smaller. With precision mode off, a preview shows the new size. With it
-  on, the area itself grows or shrinks in place.
+- **Ring size control.** Turn the touch ring clockwise to make the area
+  bigger, counter-clockwise to make it smaller. With precision mode off, a
+  preview shows the new size. With it on, the area itself grows or shrinks
+  in place.
 - **Touch preview.** Rest a finger on the precision key. A ghost shows where
   the area will land, and it follows the pen.
 - **Area drag.** With precision mode on, rest a finger on the precision key
@@ -162,7 +163,9 @@ Open Wacom Center from the application menu, in the Settings category.
 The Precision tab has the area size (5 to 80 % of the screen width), the
 smallest and the largest size (change these two limits, or set one to 0
 for no limit), the dim strength, the long-press time, the reconnect time, the ring step, the
-tick angle, and a switch for the ring direction. The Pad buttons tab is the whole pad as a
+tick angle, and a switch for the ring direction. An older install made the
+area bigger on a counter-clockwise turn. Its switch shows ticked. Untick it
+to make clockwise bigger. The Pad buttons tab is the whole pad as a
 table: each key's Touch and Press shortcuts, its own Touch register, the
 ring's four modes, the Pie keys column (one tick per side), and the
 Precision column that names the precision key. Hover a column title for

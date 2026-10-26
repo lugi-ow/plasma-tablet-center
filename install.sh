@@ -82,8 +82,8 @@ if [ -n "$pad" ]; then
     if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
         if kwriteconfig6 --notify --file kcminputrc --group ButtonRebinds \
             --group TabletRing --group "$pad" --group 0 --key 0 \
-            "AxisKey,Meta+Shift+F10,Meta+Shift+F9,600"; then
-            echo "Ring bound: one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step and the angle in Wacom Center."
+            "AxisKey,Meta+Shift+F9,Meta+Shift+F10,600"; then   # KWin fires the first chord on a counter-clockwise turn
+            echo "Ring bound: clockwise makes the area bigger, one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step, the angle and the direction in Wacom Center."
         else
             echo "Could not write the ring binding - bind it in Wacom Center (Pad buttons tab, the ring rows)."
         fi

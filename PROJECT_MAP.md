@@ -350,10 +350,11 @@ switch order, owned conf keys kept, the 2026-09 fixture's round trip, the
 pressure writes, Left-handed mode for both connections and its live-first
 state, the conf lock timeout, a missing active profile, a ring tick
 between two saves; the real kreadconfig6 and kwriteconfig6 on a scratch
-kcminputrc, logged by stubs, on a dead bus address) and `test_center.py` (the
-Pad buttons tab offscreen, same stubs: the turned table mirrored and upside
+kcminputrc, logged by stubs, on a dead bus address) and `test_center.py`
+(Wacom Center offscreen, same stubs: the turned table mirrored and upside
 down, a shortcut typed in its top row landing on key 8 and on key 1 unturned,
-the box turning the table in place, the ring lights turned; skipped without
+the box turning the table in place, the ring lights turned, a ring box named
+after the turn that fires it, the default ring direction; skipped without
 PyQt6). Every rig takes `<scratch dir> <script path>`. `add_markers.py <dir> [out dir]` puts a marker
 above every new def, function or mode (idempotent; block markers are listed
 inside it); `check_map.py` imports its rule to report a def with no marker
