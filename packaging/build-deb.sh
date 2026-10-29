@@ -5,7 +5,7 @@ set -e
 umask 022
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 # Default version: the last commit's UTC time, so it grows across the D and public repos, shallow clones and rebases.
-VER=${1:-1.0.$(TZ=UTC git -C "$SRC" log -1 --date=format-local:%Y%m%d%H%M --format=%cd 2>/dev/null || echo 0)}
+VER=${1:-2.0.$(TZ=UTC git -C "$SRC" log -1 --date=format-local:%Y%m%d%H%M --format=%cd 2>/dev/null || echo 0)}
 OUT=$(cd "${2:-.}" && pwd)
 PKG=plasma-tablet-center
 LIB=/usr/lib/$PKG
@@ -18,12 +18,20 @@ cd "$SRC"
 # the Python files' __file__). The env shebang becomes /usr/bin/python3, Debian's interpreter path.
 install -d "$ROOT$LIB"
 for f in tablet-precision.sh tablet-precision-size.sh tablet-pen-pos.py tablet-overlay.py \
-         tablet-size-preview.py tablet-pointer-warp.py tablet-hover.py tablet-pad-probe.py \
+         tablet-size-preview.py tablet-pointer-warp.py tablet-hover.py tablet-pad-probe.py tablet-pen-driver.py tablet-appfocus.py \
          tablet_center.py tablet_profiles.py; do
     sed '1s|^#!/usr/bin/env python3$|#!/usr/bin/python3|' "$f" > "$ROOT$LIB/$f"
     chmod 755 "$ROOT$LIB/$f"
 done
 install -m 644 tablet-overlay.qml "$ROOT$LIB/"
+
+# The pen driver trial's user unit, enabled for every user (it starts at login): its ExecCondition `--check` skips
+# the start unless tabprec.conf says PEN_DRIVER=1. The rescue line is `systemctl --user stop tablet-pen-driver`.
+install -d "$ROOT/usr/lib/systemd/user/default.target.wants"
+sed "s|^ExecStart=.*|ExecStart=$LIB/tablet-pen-driver.py|;s|^ExecCondition=.*tablet-pen-driver.py|ExecCondition=$LIB/tablet-pen-driver.py|" \
+    tablet-pen-driver.service > "$ROOT/usr/lib/systemd/user/tablet-pen-driver.service"
+chmod 644 "$ROOT/usr/lib/systemd/user/tablet-pen-driver.service"
+ln -s ../tablet-pen-driver.service "$ROOT/usr/lib/systemd/user/default.target.wants/tablet-pen-driver.service"
 
 # The shortcut launchers (kglobalaccel runs a command component's Exec), the menu entry and the
 # pad helper's autostart: install.sh's entries, system-wide. The autostart file keeps its name, so
@@ -44,6 +52,9 @@ printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Custom Drawing Tablet C
 printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Tablet hover preview" \
     "Comment=Ghost of the precision area while a finger rests on the precision key (idle until a supported tablet appears)" \
     "Exec=$LIB/tablet-hover.py" "NoDisplay=true" "OnlyShowIn=KDE;" > "$ROOT/etc/xdg/autostart/tablet-hover.desktop"
+printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Tablet app focus follower" \
+    "Comment=Switches the tablet profile when another app gets focus (idle while no profile names an app)" \
+    "Exec=$LIB/tablet-appfocus.py" "NoDisplay=true" "OnlyShowIn=KDE;" > "$ROOT/etc/xdg/autostart/tablet-appfocus.desktop"
 
 # install.sh's step A: the pen position, the express keys' touch sense, /dev/uinput for the pies.
 install -d "$ROOT/usr/lib/udev/rules.d"
@@ -110,7 +121,11 @@ License: Expat
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
 EOF
-chmod 644 "$D/copyright" "$D/changelog.gz" "$A"/*.desktop "$ROOT"/usr/share/metainfo/*.xml "$ROOT/etc/xdg/autostart/tablet-hover.desktop" \
+# lintian: the focus follower's autostart file is deliberately not a conffile (see the conffiles line below)
+install -d "$ROOT/usr/share/lintian/overrides"
+echo "$PKG: file-in-etc-not-marked-as-conffile [etc/xdg/autostart/tablet-appfocus.desktop]" > "$ROOT/usr/share/lintian/overrides/$PKG"
+chmod 644 "$ROOT/usr/share/lintian/overrides/$PKG"
+chmod 644 "$D/copyright" "$D/changelog.gz" "$A"/*.desktop "$ROOT"/usr/share/metainfo/*.xml "$ROOT"/etc/xdg/autostart/*.desktop \
     "$ROOT/usr/lib/udev/rules.d/70-tablet-access.rules"
 
 # Control: udev reload + trigger after an install and a removal, so the rule acts without a reboot.
@@ -134,7 +149,7 @@ Description: drawing tablet precision mode and pad settings for KDE Plasma
  is one settings window for the pad keys, the touch ring, the pen buttons,
  the pressure curve and settings profiles. Plasma 6 on Wayland only.
 EOF
-echo /etc/xdg/autostart/tablet-hover.desktop > "$ROOT/DEBIAN/conffiles"
+echo /etc/xdg/autostart/tablet-hover.desktop > "$ROOT/DEBIAN/conffiles"   # tablet-appfocus.desktop is deliberately NOT a conffile: dpkg leaves an obsolete conffile behind on a downgrade to V1, a plain file it removes
 for s in postinst postrm; do
     printf '%s\n' '#!/bin/sh' 'set -e' \
         'case "$1" in configure|remove|purge)' \
@@ -144,17 +159,41 @@ for s in postinst postrm; do
         '    fi;;' 'esac' 'exit 0' > "$ROOT/DEBIAN/$s"
     chmod 755 "$ROOT/DEBIAN/$s"
 done
-sed -i '$d' "$ROOT/DEBIAN/postinst"                   # its `exit 0`: the helper restart comes before it
+# The pen driver helper of each logged-in user (a user manager under /run/user). prerm: stopped and WAITED for, so it
+# never outlives its files and an upgrade's postinst never meets the old one still exiting (pkill only as a fallback;
+# SIGTERM = `systemctl --user stop`: the helper lets go cleanly). postinst: the new unit file read, then a restart, which
+# starts it even after prerm's stop (try-restart skips an inactive unit) and gets the NEW code; the ExecCondition keeps
+# it a no-op without PEN_DRIVER=1. The pad helper (the autostart's unit) gets a try-restart: a running one moves to the
+# NEW code, a user without one gets nothing started (R2-M1: after the old->new swap the old helper's folder is gone).
+# The focus follower (prerm killed it) is started again, as a login would: it idles without an app rule, and the unit's
+# own conditions and a user's autostart override still decide. Never SIGUSR1 or a restart in prerm: an old helper would come back over missing files.
+cat > "$ROOT/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+case "$1" in remove|upgrade|deconfigure)
+    for d in /run/user/[0-9]*; do
+        [ -S "$d/systemd/private" ] && u=$(stat -c %U "$d") || continue
+        timeout 10 systemctl --user -M "$u@" stop tablet-pen-driver.service >/dev/null 2>&1 || true
+    done
+    command -v pkill >/dev/null 2>&1 && pkill -TERM -f '^/usr/bin/python3 /usr/lib/plasma-tablet-center/tablet-pen-driver.py' || true
+    command -v pkill >/dev/null 2>&1 && pkill -TERM -f '^/usr/bin/python3 /usr/lib/plasma-tablet-center/tablet-appfocus.py' || true;;
+esac
+exit 0
+EOF
+sed -i '$d' "$ROOT/DEBIAN/postinst"                   # its `exit 0`: the user units come before it
 cat >> "$ROOT/DEBIAN/postinst" <<'EOF'
 if [ "$1" = configure ]; then
     for d in /run/user/[0-9]*; do
         [ -S "$d/systemd/private" ] && u=$(stat -c %U "$d") || continue
         timeout 10 systemctl --user -M "$u@" daemon-reload >/dev/null 2>&1 || true
+        timeout 10 systemctl --user -M "$u@" restart tablet-pen-driver.service >/dev/null 2>&1 || true
         timeout 10 systemctl --user -M "$u@" try-restart 'app-tablet\x2dhover@autostart.service' >/dev/null 2>&1 || true
+        timeout 10 systemctl --user -M "$u@" start 'app-tablet\x2dappfocus@autostart.service' >/dev/null 2>&1 || true
     done
 fi
 exit 0
 EOF
+chmod 755 "$ROOT/DEBIAN/prerm"
 (cd "$ROOT" && find . -type f ! -path './DEBIAN/*' -printf '%P\0' | sort -z | xargs -0 md5sum > DEBIAN/md5sums)
 chmod 644 "$ROOT/DEBIAN/control" "$ROOT/DEBIAN/conffiles" "$ROOT/DEBIAN/md5sums"
 dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$OUT/${PKG}_${VER}_all.deb" >/dev/null

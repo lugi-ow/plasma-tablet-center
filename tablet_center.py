@@ -9,15 +9,15 @@ import sys
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import (QBuffer, QIODevice, QLocale, QPointF,
+from PyQt6.QtCore import (QBuffer, QFileSystemWatcher, QIODevice, QLocale, QPointF,
                           QRectF, QSize, Qt, QTimer, pyqtSignal)
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (QColor, QFontMetrics, QGuiApplication, QIcon, QImage, QImageReader,
                          QKeySequence, QPainter, QPainterPath, QPalette, QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QBoxLayout, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                             QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton, QSlider,
-                             QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+                             QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+                             QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
+                             QRadioButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
                              QWidgetAction)
 
 import tablet_profiles
@@ -39,9 +39,11 @@ PIE_TIP = ("A pie key opens a Kando menu at the pen.\n"
            "The toolkit moves the mouse to the pen, then presses the\n"
            "shortcut, so the menu opens at the pen. A touch pie opens on\n"
            "the rest; lift the finger on a slice to select it.\n"
-           "A pie shortcut is F-keys plus modifiers; use each once.")
+           "A pie shortcut is any key plus modifiers; use each once.\n"
+           "The toolkit presses the physical key, so under a non-Latin\n"
+           "layout a letter reaches the program as that layout's letter.")
 TP_TIP = ("Pie on the touch: the Touch shortcut opens a Kando menu.\n"
-          "A full chord (modifiers plus one F-key). The key's raw\n"
+          "A full chord (modifiers plus one key). The key's raw\n"
           "press is swallowed.")
 PP_TIP = ("Pie on the press: the Press shortcut opens a Kando menu.\n"
           "Stored as Disabled in kcminputrc plus CHORD in the conf.")
@@ -96,6 +98,16 @@ def busget(path, prop):
         return ""
 
 
+# ── chunk: live_pen_sysname
+def live_pen_sysname(sysname):
+    """The pen's KWin node now: sysname when KWin still lists a pen there, else a fresh look (a bus
+    switch renumbers the pen; a live write to the old node fails and an old curve gets saved).
+    None = KWin lists no pen: no live write then."""
+    if sysname and "true" in busget(f"{MGR}/{sysname}", "tabletTool"):
+        return sysname
+    return detect_devices()[2]
+
+
 # ── chunk: detect_devices
 def detect_devices():
     """Return (pad_name, pen_name, pen_sysname, aspect) from KWin's live
@@ -130,12 +142,12 @@ def read_conf():
     except OSError:
         return values
     for line in lines:
-        key, _, val = line.partition("=")
-        if key.strip() not in values:
+        kv = tablet_profiles.parse_conf_line(line)
+        if not kv or kv[0] not in values:
             continue
-        try:                                       # per line, and comments stripped like conf_value:
-            values[key.strip()] = float(val.split("#", 1)[0].strip())   # one bad line must not revert
-        except ValueError:                                              # every other setting to default
+        try:                                       # per line: one bad line must not revert
+            values[kv[0]] = float(kv[1].replace(",", "."))   # every other setting to default
+        except ValueError:
             continue
     return values
 
@@ -168,9 +180,9 @@ def conf_value(key):
     """One raw conf value (comments stripped), or '' when the key is absent."""
     try:
         for line in CONF.read_text().splitlines():
-            k, _, val = line.partition("=")
-            if k.strip() == key:
-                return val.split("#", 1)[0].strip()
+            kv = tablet_profiles.parse_conf_line(line)
+            if kv and kv[0] == key:
+                return kv[1]
     except OSError:
         pass
     return ""
@@ -703,6 +715,22 @@ class AntsRadio(QRadioButton):
             draw_ants(self, self._color, self._offset)
 
 
+# ── chunk: stale_confirm
+def stale_confirm(tab, what):
+    """The Discard / Cancel question of a tab whose profile is no longer the active one (an app rule switched
+    it while edits waited): Apply would store the edits in the other profile, so it is not offered.
+    True = discard and go on."""
+    box = QMessageBox(QMessageBox.Icon.Question, "Custom Drawing Tablet Center",
+                      f"The {what} tab has changes that cannot be applied. "
+                      f"An app made {tab.stale} active, these are for {tab.loaded_name}. Discard them?",
+                      QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, tab)
+    if box.exec() == QMessageBox.StandardButton.Cancel:
+        return False
+    tab.dirty = False
+    tab.unlock_stale()
+    return True
+
+
 # ── chunk: PadTab
 class PadTab(QWidget):
     """The pad as a table: the keys pictured as printed on the pad, a Touch
@@ -723,6 +751,8 @@ class PadTab(QWidget):
         self.parse = tablet_profiles.load_parse_chord()
         self._prm_last = None
         self.dirty = False          # a switch asks Apply/Discard/Cancel while this is set
+        self.stale = None           # the profile an app made active while edits waited: Apply is off then
+        self.loaded_name = ""
         outer = QVBoxLayout(self)
         self.profile_label = QLabel()
         outer.addWidget(self.profile_label)
@@ -919,9 +949,7 @@ class PadTab(QWidget):
     def set_left_handed(self, on):
         """The Left-handed box: KDE's setting at once, for the cable and for
         Bluetooth (never a profile key), then the table turned in place."""
-        sysname = self.sysname
-        if not sysname or "true" not in busget(f"{MGR}/{sysname}", "tabletTool"):
-            sysname = detect_devices()[2]            # a bus switch renumbers the pen: never a stale node
+        sysname = live_pen_sysname(self.sysname)     # a bus switch renumbers the pen: never a stale node
         notes = []
         try:
             tablet_profiles.apply_left_handed(on, self.pen, sysname, notes.append)
@@ -931,6 +959,8 @@ class PadTab(QWidget):
             self.left.blockSignals(False)
             QMessageBox.warning(self, "Custom Drawing Tablet Center", f"Left-handed mode was not saved.\n{err}")
             return
+        if sysname:                                  # while ON the pen driver's area is sent turned: the toggle sends it again
+            subprocess.Popen(["bash", str(TOGGLE), "resume"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.sysname = sysname or self.sysname
         self.turned = on
         self._place()
@@ -942,6 +972,8 @@ class PadTab(QWidget):
         applied; True = go on with the switch."""
         if not self.dirty:
             return True
+        if self.stale:
+            return stale_confirm(self, "Pad buttons")
         box = QMessageBox(QMessageBox.Icon.Question, "Custom Drawing Tablet Center",
                           "The Pad buttons tab has changes that have not been applied.",
                           QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Discard
@@ -956,9 +988,22 @@ class PadTab(QWidget):
         return True
 
     def set_profile(self, name):
+        self.loaded_name = name
         self.profile_label.setText(f"Profile: {elided(self.profile_label, name, 300)}. "
                                    "Changes go into this profile.")
         self.profile_label.setToolTip(name)
+
+    def lock_stale(self, active):
+        """An app made `active` the profile while these edits wait: they cannot be applied to it."""
+        self.stale = active
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.setToolTip(f"An app made {active} active. Edits for {self.loaded_name} cannot be applied now: discard them.")
+
+    def unlock_stale(self):
+        """The profile is the active one again, or the edits are gone: Apply works again."""
+        self.stale = None
+        self._apply_btn.setEnabled(True)
+        self._apply_btn.setToolTip("")
 
     def pick_prm(self, idx):
         """The round ticks: one key at most; a click on the active one
@@ -1048,6 +1093,8 @@ class PadTab(QWidget):
         the key is set Disabled (a refused pie used to leave a dead key:
         Disabled, no chord); a raw-form key is never Disabled. The table then
         reloads each row from disk."""
+        if self.stale:
+            return                              # the button is off; the confirm dialogs do not offer Apply either
         problems = []
         m = self.prm_row()
         if m is not None:
@@ -1070,16 +1117,24 @@ class PadTab(QWidget):
                 drop_conf_key(f"TOUCH_CHORD_{n}")
                 continue
             touch_ok = bool(touch) and (self.parse is None or self.parse(touch, tp) is not None)
-            if touch and not touch_ok:
+            touch_bad = False
+            if touch_ok:                             # a console switch is refused, F20 only warned
+                kind, note = tablet_profiles.hazard_note(f"Key {n} Touch shortcut", touch)
+                if note:
+                    problems.append(note + ("; it is not written, the key keeps its previous Touch shortcut."
+                                            if kind == "console" else "."))
+                touch_bad = kind == "console"
+                touch_ok = not touch_bad
+            if touch and not touch_ok and not touch_bad:
                 problems.append(f"Key {n}: '{touch}' is not a "
-                                + ("pie touch chord (modifiers plus one F-key)" if tp else
-                                   "touch chord (modifiers and F-keys; not Meta alone)")
+                                + ("pie touch chord (modifiers plus one key)" if tp else
+                                   "touch chord (modifiers and keys; not Meta alone)")
                                 + "; the key keeps its previous Touch shortcut.")
             elif tp and not touch:
                 problems.append(f"Key {n}: Pie on the touch needs a Touch shortcut; the key keeps "
                                 "its previous binding.")
             if touch_ok:
-                save_conf_key(f"TOUCH_CHORD_{n}", touch)
+                save_conf_key(f"TOUCH_CHORD_{n}", tablet_profiles.conf_chord(touch))
             elif not touch:
                 drop_conf_key(f"TOUCH_CHORD_{n}")    # an emptied box: the chord goes (a typo keeps the old one)
             if self._raw.get(idx):                   # a raw-form binding (MouseButton, Scroll, ...): never Disabled
@@ -1090,17 +1145,24 @@ class PadTab(QWidget):
                     tablet_profiles.kwrite_literal(["ButtonRebinds", "Tablet", self.pad], str(idx), press)
                 drop_conf_key(f"CHORD_{n}")
                 continue
-            press_ok = bool(press) and (self.parse is None or self.parse(press) is not None)
+            press_bad = False
+            if press and press.lower() != "disabled":   # a console switch is refused, F20 only warned
+                kind, note = tablet_profiles.hazard_note(f"Key {n} Press shortcut", press)
+                if note:
+                    problems.append(note + ("; it is not written, the key keeps its previous binding."
+                                            if kind == "console" else "."))
+                press_bad = kind == "console"
+            press_ok = bool(press) and not press_bad and (self.parse is None or self.parse(press) is not None)
             if pp and not press:
                 problems.append(f"Key {n}: Pie on the press needs a Press shortcut; the key keeps "
                                 "its previous binding.")
-            elif pp and not press_ok:
-                problems.append(f"Key {n}: a pie press chord is modifiers plus one F-key; the key "
+            elif pp and not press_ok and not press_bad:
+                problems.append(f"Key {n}: a pie press chord is modifiers plus one key the toolkit can press; the key "
                                 "keeps its previous binding.")
             if (tp and touch_ok) or (pp and press_ok):   # the key belongs to the daemon
                 kwrite(self.pad, idx, "Disabled")        # never a deleted line: KWin would leak the raw button
                 if pp and press_ok:
-                    save_conf_key(f"CHORD_{n}", press)
+                    save_conf_key(f"CHORD_{n}", tablet_profiles.conf_chord(press))
                 elif not pp:
                     drop_conf_key(f"CHORD_{n}")
                     if press:
@@ -1108,6 +1170,8 @@ class PadTab(QWidget):
                 continue                                 # a refused press pie: CHORD stays as it was
             if tp or pp:
                 continue                                 # every ticked side refused: the key stays as it was
+            if press_bad:
+                continue                                 # a console chord: refused above, the key keeps its binding
             # isEmpty() is False for ANY non-empty text, so it never rejected anything; toString()
             # is empty exactly for Qt's Key_unknown. A WARNING, never a refusal: a chord Qt cannot
             # parse can still be what someone wants under another keyboard layout.
@@ -1121,6 +1185,18 @@ class PadTab(QWidget):
             if self._ring_raw.get(mode):
                 continue                             # Scroll or Disabled: System Settings owns that mode
             chords = (up.text().strip(), down.text().strip())
+            refused = False
+            for t in chords:                         # a console switch is refused, F20 only warned
+                kind, note = tablet_profiles.hazard_note(f"Ring mode {mode + 1}", t)
+                if note:
+                    problems.append(note + ("; it is not written, the mode keeps its previous binding."
+                                            if kind == "console" else "."))
+                refused = refused or kind == "console"
+            if refused:
+                kept = ring_read(self.pad, mode)     # the boxes show what is on disk again
+                up.setText(kept[0] if kept else "")
+                down.setText(kept[1] if kept else "")
+                continue
             if any(t and t not in MODIFIER_ONLY and not QKeySequence(t).toString() for t in chords):
                 problems.append(f"Ring mode {mode + 1}: that does not look like a valid key "
                                 "combination. It might not work.")
@@ -1182,6 +1258,15 @@ class CurveGraph(QWidget):
         self.p1 = QPointF(0.0, 0.0)
         self.p2 = QPointF(1.0, 1.0)
         self._drag = None
+        self.tip = None             # callable -> tooltip text, asked fresh each time the pointer enters
+
+    def refresh_tip(self):
+        if self.tip is not None:
+            self.setToolTip(self.tip())
+
+    def enterEvent(self, event):
+        self.refresh_tip()
+        super().enterEvent(event)
 
     def set_points(self, x1, y1, x2, y2):
         self.p1, self.p2 = QPointF(x1, y1), QPointF(x2, y2)
@@ -1254,6 +1339,8 @@ class PenTab(QWidget):
         super().__init__()
         self.pad, self.pen, self.sysname = pad, pen, sysname
         self.dirty = False           # a switch asks Apply/Discard/Cancel while this is set
+        self.stale = None            # the profile an app made active while edits waited: Apply is off then
+        self.loaded_name = ""
         layout = QVBoxLayout(self)
         self.profile_label = QLabel()
         layout.addWidget(self.profile_label)
@@ -1290,6 +1377,8 @@ class PenTab(QWidget):
 
         curve_row = QHBoxLayout()
         self.graph = CurveGraph()
+        self.graph.tip = lambda: tablet_profiles.pressure_tip(tablet_profiles.active_profile_name() or "")   # the helper's record of how hard you draw
+        self.graph.refresh_tip()
         curve_row.addWidget(self.graph)
         spins = QGridLayout()
         self.p1x, self.p1y, self.p2x, self.p2y = (self._curve_spin() for _ in range(4))
@@ -1351,10 +1440,10 @@ class PenTab(QWidget):
         btn_row = QHBoxLayout()
         reset = QPushButton("Reset Pressure")
         reset.clicked.connect(self.reset_pressure)
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self.apply)
+        self._apply_btn = QPushButton("Apply")
+        self._apply_btn.clicked.connect(self.apply)
         btn_row.addWidget(reset)
-        btn_row.addWidget(apply_btn)
+        btn_row.addWidget(self._apply_btn)
         layout.addLayout(btn_row)
         layout.addStretch()
 
@@ -1373,6 +1462,8 @@ class PenTab(QWidget):
         applied; True = go on with the switch."""
         if not self.dirty:
             return True
+        if self.stale:
+            return stale_confirm(self, "Pen")
         box = QMessageBox(QMessageBox.Icon.Question, "Custom Drawing Tablet Center",
                           "The Pen tab has changes that have not been applied.",
                           QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Discard
@@ -1387,9 +1478,22 @@ class PenTab(QWidget):
         return True
 
     def set_profile(self, name):
+        self.loaded_name = name
         self.profile_label.setText(f"Profile: {elided(self.profile_label, name, 300)}. "
                                    "Changes go into this profile.")
         self.profile_label.setToolTip(name)
+
+    def lock_stale(self, active):
+        """An app made `active` the profile while these edits wait: they cannot be applied to it."""
+        self.stale = active
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.setToolTip(f"An app made {active} active. Edits for {self.loaded_name} cannot be applied now: discard them.")
+
+    def unlock_stale(self):
+        """The profile is the active one again, or the edits are gone: Apply works again."""
+        self.stale = None
+        self._apply_btn.setEnabled(True)
+        self._apply_btn.setToolTip("")
 
     @staticmethod
     def _curve_spin():
@@ -1427,6 +1531,8 @@ class PenTab(QWidget):
         self.graph.set_points(0.0, 0.0, 1.0, 1.0)
 
     def apply(self):
+        if self.stale:
+            return
         problems = []
         for i, (code, box) in enumerate(self.buttons.items()):
             seq = box.text().strip()
@@ -1439,6 +1545,13 @@ class PenTab(QWidget):
             elif len(seq) == 1 and seq.isalnum():      # the profile reader warns on the same shape
                 problems.append(f"{self.LABELS[i]}: '{seq}' is a single letter or digit. It fails "
                                 "when a non-Latin layout is active; F-keys and modifiers always work.")
+            kind, note = tablet_profiles.hazard_note(self.LABELS[i], seq)
+            if note:                           # a console switch is refused, F20 only warned
+                problems.append(note + ("; it is not written, the button keeps its previous binding."
+                                        if kind == "console" else "."))
+            if kind == "console":
+                box.setText(kread_group(["ButtonRebinds", "TabletTool", self.pen], code))
+                continue
             kwrite_group(["ButtonRebinds", "TabletTool", self.pen], code, seq)
         if self.rmin.value() >= self.rmax.value():     # applied as set: a warning, never a refusal
             problems.append(f"Pressure range: the minimum ({self.rmin.value():.2f}) is not below the "
@@ -1447,6 +1560,7 @@ class PenTab(QWidget):
         curve = (f"{self.p1x.value():.4f},{self.p1y.value():.4f};"
                 f"{self.p2x.value():.4f},{self.p2y.value():.4f};")
         notes = []
+        self.sysname = live_pen_sysname(self.sysname)        # B3-1: never a live write to a node the pen left
         tablet_profiles.apply_pressure(curve, self.rmin.value(), self.rmax.value(), self.pen,
                                       self.sysname, status=notes.append)
         tablet_profiles.checkpoint(self.pad, self.pen, self.sysname)
@@ -1454,6 +1568,219 @@ class PenTab(QWidget):
         problems.extend(notes)
         if problems:
             QMessageBox.information(self, "Custom Drawing Tablet Center", "\n".join(problems))
+
+
+# ── chunk: AddAppDialog
+class AddAppDialog(QDialog):
+    """Pick the app for a profile: the installed apps (name and icon), then the windows the follower saw that
+    no installed app claims. Nothing is typed as a name; the search field only filters the list."""
+
+    def __init__(self, parent, apps, seen, rules, profile):
+        super().__init__(parent)
+        self.setWindowTitle(f"Add app to {profile}")
+        self.setMinimumSize(360, 420)
+        v = QVBoxLayout(self)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search")
+        self.search.setClearButtonEnabled(True)
+        v.addWidget(self.search)
+        self.list = QListWidget()
+        self.list.setIconSize(QSize(24, 24))
+        v.addWidget(self.list, 1)
+
+        def owner(keys):                                # another profile that owns this app now
+            return next((n for n, ks in rules if n != profile
+                         and any(tablet_profiles.perapp_related(k, a) for k in ks for a in keys)), "")
+        for app in apps:
+            who = owner(app["keys"])
+            item = QListWidgetItem(app["name"] + (f"  ({who})" if who else ""))
+            item.setData(Qt.ItemDataRole.UserRole, app["keys"])
+            item.setData(Qt.ItemDataRole.UserRole + 1, app["name"])
+            item.setIcon(icon_named(app["icon"]))
+            self.list.addItem(item)
+        claimed = {k for app in apps for k in app["keys"]}
+        for cls in seen:
+            if cls in claimed or any(tablet_profiles.perapp_related(cls, k) for k in claimed):
+                continue
+            who = owner([cls])
+            item = QListWidgetItem(cls + (f"  ({who})" if who else ""))
+            item.setData(Qt.ItemDataRole.UserRole, [cls])
+            item.setData(Qt.ItemDataRole.UserRole + 1, cls)
+            self.list.addItem(item)
+        self.search.textChanged.connect(self._filter)
+        self.list.itemDoubleClicked.connect(lambda _item: self.accept())
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+        self.ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok.setEnabled(False)                       # nothing picked yet
+        self.list.currentItemChanged.connect(lambda cur, _prev: self.ok.setEnabled(cur is not None and not cur.isHidden()))
+        self.search.returnPressed.connect(lambda: self.ok.isEnabled() and self.accept())
+
+    def _filter(self, text):
+        needle = text.lower()
+        first = None
+        for n in range(self.list.count()):
+            item = self.list.item(n)
+            item.setHidden(needle not in item.text().lower())
+            if first is None and not item.isHidden():
+                first = item
+        if needle and first is not None:
+            self.list.setCurrentItem(first)             # typing "krita" then Enter picks the first match
+        elif self.list.currentItem() is not None and self.list.currentItem().isHidden():
+            self.list.setCurrentItem(None)
+            self.ok.setEnabled(False)
+
+    def chosen(self):
+        """(name, keys) of the selected entry, or ('', [])."""
+        item = self.list.currentItem()
+        if item is None:
+            return "", []
+        return item.data(Qt.ItemDataRole.UserRole + 1), list(item.data(Qt.ItemDataRole.UserRole))
+
+
+# ── chunk: icon_named
+def icon_named(name):
+    """A theme icon by name, or an icon file by path; empty when there is none."""
+    icon = QIcon(name) if name.startswith("/") else QIcon.fromTheme(name) if name else QIcon()
+    return icon if not icon.isNull() else QIcon.fromTheme("application-x-executable")   # a generic one when unresolved
+
+
+# ── chunk: PerAppBox
+class PerAppBox(QGroupBox):
+    """Profile specifics (Profiles tab): the apps that use the ACTIVE profile and its default mark. Every
+    press is written to profiles.ini at once; tablet-appfocus.py does the switching."""
+
+    ROW = 36                                # px per app row; five show, more scroll inside
+
+    def __init__(self, note):
+        super().__init__("Profile specifics")
+        self.setMaximumWidth(460)               # wider and the remove button strays far from the app's name
+        self.note = note
+        self.profile = ""
+        self._apps = None
+        v = QVBoxLayout(self)
+        self.heading = QLabel()
+        self.heading.setStyleSheet("font-weight: bold;")
+        v.addWidget(self.heading)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setMinimumHeight(self.ROW * 3)
+        self.rows_widget = QWidget()
+        self.rows = QVBoxLayout(self.rows_widget)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(0)
+        self.scroll.setWidget(self.rows_widget)
+        v.addWidget(self.scroll, 1)
+        self.add_btn = QPushButton("Add app...")
+        self.add_btn.clicked.connect(self.add_clicked)
+        v.addWidget(self.add_btn)
+        self.default = QCheckBox("Use for all other apps")
+        self.default.clicked.connect(self.default_clicked)      # clicked: a reload never writes
+        v.addWidget(self.default)
+        self.reload()
+
+    def apps(self):
+        if self._apps is None:
+            self._apps = tablet_profiles.desktop_apps()
+        return self._apps
+
+    def reload(self, profile=None):
+        """Show a profile (default: the active one) and its apps, read from disk."""
+        self.profile = profile or tablet_profiles.active_profile_name() or ""
+        default, rules = tablet_profiles.perapp_get()
+        keys = next((ks for n, ks in rules if n == self.profile), [])
+        self.heading.setText(elided(self.heading, self.profile, 280) if self.profile else "(no profile)")
+        self.heading.setToolTip(self.profile)
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()                    # deleteLater alone leaves it drawn until the event loop runs
+                item.widget().setParent(None)
+                item.widget().deleteLater()
+        self.row_widgets = []
+        for row in tablet_profiles.perapp_rows(keys, self.apps()):
+            w = QWidget()
+            w.setFixedHeight(self.ROW)
+            h = QHBoxLayout(w)
+            h.setContentsMargins(2, 2, 2, 2)
+            pic = QLabel()
+            pic.setFixedSize(24, 24)
+            icon = icon_named(row["icon"])
+            if not icon.isNull():
+                pic.setPixmap(icon.pixmap(24, 24))
+            h.addWidget(pic)
+            label = QLabel(elided(self, row["name"], 190))
+            label.setToolTip(row["name"] + "\n" + ", ".join(row["keys"]))
+            h.addWidget(label, 1)
+            drop = QToolButton()
+            drop.setText("✕")
+            drop.setToolTip("Remove")
+            drop.clicked.connect(lambda _, ks=row["keys"]: self.remove_clicked(ks))
+            h.addWidget(drop)
+            self.rows.addWidget(w)
+            self.row_widgets.append((row["name"], w, drop))
+        self.rows.addStretch()
+        self.default.setChecked(bool(self.profile) and self.profile == default)
+        self.default.setToolTip(f"Now: {default}" if default and default != self.profile else "")
+        self.add_btn.setEnabled(bool(self.profile))
+        self.default.setEnabled(bool(self.profile))
+
+    def _write(self, change):
+        """Run one locked write for the shown profile; True when it landed."""
+        try:
+            change()
+        except TimeoutError:
+            self.note("Not saved. Try again.")
+            self.reload(self.profile)
+            return False
+        return True
+
+    def pick_app(self):
+        """(name, keys) from the Add app dialog, or ('', []). A seam for the rig."""
+        default, rules = tablet_profiles.perapp_get()
+        dlg = AddAppDialog(self, self.apps(), tablet_profiles.seen_apps(), rules, self.profile)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return "", []
+        return dlg.chosen()
+
+    def add_clicked(self):
+        name, keys = self.pick_app()
+        if not keys or not self.profile:
+            return
+        before = dict(tablet_profiles.perapp_get()[1])
+        if self._write(lambda: tablet_profiles.perapp_add(self.profile, keys, self.apps())):
+            moved = next((n for n, ks in before.items() if n != self.profile
+                          and any(tablet_profiles.perapp_related(k, a) for k in ks for a in keys)), "")
+            self.reload(self.profile)
+            self.note(f"{name} uses {self.profile}." + (f" It left {moved}." if moved else "") + self.start_follower())
+
+    def remove_clicked(self, keys):
+        if self._write(lambda: tablet_profiles.perapp_remove(self.profile, keys)):
+            self.reload(self.profile)
+
+    def default_clicked(self, on):
+        if self._write(lambda: tablet_profiles.perapp_default(self.profile, on)):
+            self.reload(self.profile)
+            self.note((f"Other apps use {self.profile}." if on else "No profile for other apps.") + self.start_follower())
+        else:
+            self.default.setChecked(not on)
+
+    def start_follower(self):
+        """Start the helper that watches the focus when a rule exists and it is not running. A note for the
+        status line ('' when nothing was started)."""
+        default, rules = tablet_profiles.perapp_get()
+        if not (default or rules) or tablet_profiles.follower_running():
+            return ""
+        try:                                         # the helper that watches the focus: started here, by login autostart later
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "tablet-appfocus.py")],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return " The focus follower was started."
+        except OSError as err:
+            return f" The focus follower could not start: {err}."
 
 
 # ── chunk: ProfilesTab
@@ -1492,13 +1819,18 @@ class ProfilesTab(QWidget):
             btn.clicked.connect(lambda _, n=i + 1: self.cell_clicked(n))
             grid.addWidget(btn, i // 3, i % 3)
             self.grid_cells.append(btn)
-        layout.addWidget(grid_widget)
-
         self.edit_grid = QPushButton("Edit Grid")
         self.edit_grid.setCheckable(True)
         self.edit_grid.toggled.connect(
             lambda on: self.edit_grid.setText("Done" if on else "Edit Grid"))
-        layout.addWidget(self.edit_grid)
+        left = QVBoxLayout()
+        left.addWidget(grid_widget)
+        left.addWidget(self.edit_grid)
+        self.perapp = PerAppBox(self.note)
+        middle = QHBoxLayout()
+        middle.addLayout(left)
+        middle.addWidget(self.perapp, 1)               # right of the grid, as high as the grid
+        layout.addLayout(middle)
 
         sep = QLabel()
         sep.setFixedHeight(1)
@@ -1538,6 +1870,7 @@ class ProfilesTab(QWidget):
         return QIcon(pix)
 
     def refresh(self):
+        self.perapp.reload()
         active = tablet_profiles.active_profile_name() or ""
         names = tablet_profiles.list_profiles()
         self.menu_btn.setText(elided(self.menu_btn, active, 240) if active else "(no profile)")
@@ -1703,6 +2036,7 @@ class ProfilesTab(QWidget):
         if not self._confirm_unapplied():
             return
         msgs = []                                       # every note of the switch, shown together at the end:
+        self.sysname = live_pen_sysname(self.sysname)   # B3-1: the pen's node as KWin has it NOW
         try:                                            # a final "Switched" line used to cover the daemon warning
             tablet_profiles.switch_to(name, pad=self.pad, pen=self.pen,
                                      sysname=self.sysname, status=msgs.append)
@@ -1764,6 +2098,7 @@ class ProfilesTab(QWidget):
             tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
             if name == active:
                 msgs = []
+                self.sysname = live_pen_sysname(self.sysname)
                 try:
                     tablet_profiles.switch_to(name, checkpoint_=False, pad=self.pad, pen=self.pen,
                                              sysname=self.sysname, status=msgs.append)
@@ -1778,6 +2113,7 @@ class ProfilesTab(QWidget):
     def export_all(self):
         if not self._confirm_unapplied():
             return                                      # the export is the LIVE values: edits not applied would be missing
+        self.sysname = live_pen_sysname(self.sysname)
         tablet_profiles.checkpoint(self.pad, self.pen, self.sysname)
         active = tablet_profiles.active_profile_name() or "My settings"
         default = str(Path.home() / "Documents" / f"{active}.tcprofile")
@@ -1914,9 +2250,36 @@ def main():
         tabs.setCurrentIndex(select)
         win.setWindowTitle(f"Custom Drawing Tablet Center — {name}")
         state.update(precision_tab=precision_tab, pad_tab=pad_tab, pen_tab=pen_tab,
-                     profiles_tab=profiles_tab)
+                     profiles_tab=profiles_tab, loaded=name)
 
     build_tabs(select=1 if "pad" in sys.argv[1:] else 0)
+    state["profiles_tab"].perapp.start_follower()       # a rule exists but the helper is down (an upgrade ended it)
+
+    # A per-app rule switches the profile behind this window (tablet-appfocus.py writes profiles.ini):
+    # the tabs are rebuilt from the new live values, unless an edit waits for Apply.
+    settle = QTimer()
+    settle.setSingleShot(True)
+    settle.setInterval(700)
+
+    def external_switch():
+        name = tablet_profiles.active_profile_name() or "My settings"
+        if name == state.get("loaded"):
+            for tab in (state["pad_tab"], state["pen_tab"]):
+                if tab.stale:
+                    tab.unlock_stale()          # an app brought the loaded profile back: the edits fit again
+            return
+        if state["pad_tab"].dirty or state["pen_tab"].dirty:
+            for tab in (state["pad_tab"], state["pen_tab"]):
+                tab.lock_stale(name)            # Apply would store the edits in the wrong profile
+            state["profiles_tab"].note(f"An app made {name} active. Edits for {state.get('loaded')} "
+                                       "cannot be applied now: discard them.")
+            return
+        build_tabs(select=tabs.currentIndex())
+        state["profiles_tab"].note(f"Switched to {name} by an app rule.")
+
+    settle.timeout.connect(external_switch)
+    watcher = QFileSystemWatcher([str(tablet_profiles.DATA)])
+    watcher.directoryChanged.connect(lambda _path: settle.start())
 
     links = QHBoxLayout()
     for label, cmd in (("Pie editor (Kando)", ["kando", "--settings"]),

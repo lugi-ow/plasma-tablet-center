@@ -1,5 +1,5 @@
 #!/bin/bash
-# tablet-precision.sh [toggle|resize|where|suspend|resume|heal|pause] - precision mode on Plasma 6 Wayland; the only writer of the pen mapping.
+# tablet-precision.sh [toggle|resize|where|suspend|resume|heal|pause|grabbed] - precision mode on Plasma 6 Wayland; the only writer of the pen mapping.
 # Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 
 # ── chunk: config-and-paths
@@ -52,11 +52,11 @@ find_pen() {  # the pen's KWin sysname into $pen: the cached one when KWin still
         case "$tool" in *true*) pen=$n; break;; esac
     done
     if [ -z "$pen" ]; then
-        if [ "$MODE" = heal ] && [ "$TRIES" -lt 8 ]; then   # the daemon saw the tablet's node: KWin may list the pen a moment later
+        if { [ "$MODE" = heal ] || [ "$MODE" = grabbed ]; } && [ "$TRIES" -lt 8 ]; then   # the daemon saw the tablet's node: KWin may list the pen a moment later
             TRIES=$((TRIES + 1)); sleep 0.25; find_pen; return
         fi
         [ -n "$PEN_OPTIONAL" ] && return 1   # OFF with the tablet switched off: the caller ends the mode without it
-        [ "$MODE" = heal ] || note "No tablet pen found (tablet asleep?)"
+        [ "$MODE" = heal ] || [ "$MODE" = grabbed ] || note "No tablet pen found (tablet asleep?)"
         exit 1
     fi
     echo "$pen" > "$PEN_CACHE"
@@ -104,6 +104,7 @@ compute_area() {  # the area for the pen's CURRENT position (toggle ON, a move, 
             return 1
         fi
         set -- ${line#*"TPREC $NON"}
+        live_screen && set -- "$1" "$2" "$LSW" "$LSH"     # one frame for the recorded screen size: X11's, like fit_area reads
     fi
     area_math pen "$1" "$2" "$3" "$4"
 }
@@ -148,9 +149,44 @@ unpersist() {  # kcminputrc must name the mapping the pen has with precision mod
     return 1
 }
 
+# ── chunk: driver_send
+driver_send() {  # $@ as one line to the pen driver trial's socket; fails when no helper listens, so the KWin path runs.
+                 # Four numbers = a rectangle: Left-handed turns the helper's output (libinput) BEFORE KWin's area, so it is sent turned.
+                 # The helper keeps its socket across a reconnect; it is missing only before a first grab or after NOPEN s with no pen.
+                 # The send waits for it (DRIVER_WAIT s, default 3) ONLY while a helper takes the pen (it holds pen-driver.lock):
+                 # no helper, a helper with no pen, or the switch off = no wait (the helper's grabbed hook mends a KWin-path write).
+    local end=0 fixed=""
+    while :; do
+        if [ -S "$RD/pen-driver.sock" ]; then
+            if [ -z "$fixed" ]; then
+                fixed=1
+                if [ $# -eq 4 ] && [ -n "$pen" ]; then
+                    case "$(busctl --user get-property $KW $MGR/$pen $IF leftHanded 2>/dev/null)" in
+                        *true*) set -- $(LC_ALL=C awk -v x="$1" -v y="$2" -v w="$3" -v h="$4" 'BEGIN{printf "%.6f %.6f %.6f %.6f", 1 - x - w, 1 - y - h, w, h}');;
+                    esac
+                fi
+            fi
+            python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(" ".join(sys.argv[2:]).encode(), sys.argv[1])' \
+                "$RD/pen-driver.sock" "$@" 2>/dev/null && return 0   # a dead socket file nobody reads fails here: it waits like an absent one
+        fi
+        if [ "$end" -eq 0 ]; then   # the first miss decides: wait only while a helper takes the pen (one flock, off the socket path)
+            end=-1
+            if [ "${PEN_DRIVER:-}" = 1 ] && [ -n "$pen" ] && [ -e "$RD/pen-driver.lock" ] && ! flock -n -s "$RD/pen-driver.lock" true 2>/dev/null; then
+                DRIVER_WAIT=${DRIVER_WAIT:-3}; case "$DRIVER_WAIT" in *[!0-9]*) DRIVER_WAIT=3;; esac; DRIVER_WAIT=$((10#$DRIVER_WAIT))   # 10#: "08" is not octal
+                end=$(( ${EPOCHREALTIME/[.,]/} + DRIVER_WAIT * 1000000 ))
+            fi
+        fi
+        [ "${EPOCHREALTIME/[.,]/}" -lt "$end" ] || break
+        sleep 0.1
+    done
+    [ "$end" -gt 0 ] && [ "$DRIVER_WAIT" -gt 0 ] && echo "tablet-precision: pen driver socket not there after ${DRIVER_WAIT} s - mapping through KWin" >&2
+    return 1
+}
+
 # ── chunk: map_area
 map_area() {  # outputArea = $1..$4 in KWin's memory, then kcminputrc back to the OFF mapping. A ledger is written ONLY when that
               # write-back cannot be proved, so the old repair path still exists on a KDE that changed under us.
+    driver_send "$1" "$2" "$3" "$4" && return 0   # the pen driver trial is live: the mapping is arithmetic in its helper, KWin and kcminputrc stay untouched
     pen_group                            # ask KWin for the group path BEFORE the mapping changes: every read stays ahead of the write
     if [ -f "$STATE" ]; then BASE=$(cat "$STATE")
     else BASE=$(busctl --user get-property $KW $MGR/$pen $IF outputArea 2>/dev/null | cut -d' ' -f2-)
@@ -164,6 +200,32 @@ map_area() {  # outputArea = $1..$4 in KWin's memory, then kcminputrc back to th
             echo "tablet-precision: cannot write $LEDGER either - switch precision mode off before you unplug" >&2
     fi
     return 0
+}
+
+# ── chunk: live_screen
+live_screen() {  # the screen size NOW into $LSW $LSH (tablet-pen-pos.py --screen); 1 = unknown (no display), the recorded size stays
+    local out
+    out=$(python3 "$DIR/tablet-pen-pos.py" --screen 2>/dev/null) || return 1
+    read -r LSW LSH <<EOF
+$out
+EOF
+    case "$LSW$LSH" in ""|*[!0-9]*) return 1;; esac
+    [ "${LSW:-0}" -gt 0 ] && [ "${LSH:-0}" -gt 0 ]
+}
+
+# ── chunk: fit_area
+fit_area() {  # UNU-03: the screen can change while the mode is on (resolution, a monitor). KWin applies the FRACTIONS, so they are the truth: X Y W H SW SH are redone from them for the live screen; FITTED=1 when anything moved
+    FITTED=""
+    [ -n "${FW:-}" ] || return 0
+    local koc="${XDG_CONFIG_HOME:-$HOME/.config}/kwinoutputconfig.json"   # KWin rewrites it at every output change (VM, 2026-10-29)
+    [ -e "$koc" ] && ! [ "$koc" -nt "$RD/screen-seen" ] && return 0   # no change since the last look: no process on a ring tick
+    touch "$RD/screen-seen"   # BEFORE the look: a KWin write during it is newer than the stamp, so the next run looks again
+    live_screen || return 0
+    [ "$LSW $LSH" = "$SW $SH" ] && return 0
+    read -r X Y W H <<EOF
+$(awk -v fx="$FX" -v fy="$FY" -v fw="$FW" -v fh="$FH" -v sw="$LSW" -v sh="$LSH" 'BEGIN{printf "%d %d %d %d", fx * sw + 0.5, fy * sh + 0.5, fw * sw + 0.5, fh * sh + 0.5}')
+EOF
+    SW=$LSW SH=$LSH FITTED=1
 }
 
 # ── chunk: apply_area
@@ -186,7 +248,10 @@ remap() {  # the area on record onto the pen again (resume, heal while ON)
     if [ -z "${11:-}" ] && [ -n "${7:-}" ]; then     # an area file from before the fractions were recorded: compute them
         set -- "$@" $(awk -v x="$1" -v y="$2" -v w="$3" -v h="$4" -v sw="$6" -v sh="$7" 'BEGIN{printf "%.6f %.6f %.6f %.6f", x/sw, y/sh, w/sw, h/sh}')
     fi
-    [ -n "${11:-}" ] && map_area "$8" "$9" "${10}" "${11}"
+    [ -n "${11:-}" ] || return 0
+    X=$1 Y=$2 W=$3 H=$4 SW=$6 SH=$7 FX=$8 FY=$9 FW=${10} FH=${11}
+    fit_area
+    if [ -n "$FITTED" ]; then DIM=$5; apply_area; else map_area "$8" "$9" "${10}" "${11}"; fi   # a changed screen: the area file and the overlay follow too
 }
 
 # ── chunk: heal_off
@@ -215,19 +280,35 @@ unpause() {  # a pause younger than RECONNECT seconds comes back at the SAME are
     { [ -n "${11:-}" ] && [ -n "$BASEL" ]; } || return 0
     echo "$BASEL" > "$STATE"
     X=$1 Y=$2 W=$3 H=$4 SW=$6 SH=$7 FX=$8 FY=$9 FW=${10} FH=${11}
+    fit_area
     apply_area || { rm -f "$STATE"; return 0; }
     echo "tablet-precision: the tablet came back within $RECONNECT s - precision mode resumed" >&2
     return 0
 }
 
+# ── chunk: read_conf_keys
+read_conf_keys() {   # THE conf line shape (PROJECT_MAP): KEY [sp] = [sp] VALUE, # starts a comment, one pair of quotes dropped. The file is READ, never run
+    local line key val
+    unset PEN_DRIVER DRIVER_WAIT   # the switch comes from the conf only: an exported PEN_DRIVER=1 must not turn the trial on
+    [ -f "$CONF" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%%#*}
+        [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+        key=${BASH_REMATCH[1]} val=${BASH_REMATCH[2]}
+        val=${val#"${val%%[![:space:]]*}"}; val=${val%"${val##*[![:space:]]}"}
+        case "$val" in \"*\"|\'*\') val=${val:1:${#val}-2};; esac
+        case "$key" in SCALE|DIM|SCALE_MIN|SCALE_MAX|RECONNECT|RING_STEP|PEN_DRIVER|DRIVER_WAIT) printf -v "$key" '%s' "$val";; esac
+    done < "$CONF"
+}
+
 # ── chunk: run-lock
 # heal looks for the pen BEFORE the lock. The daemon starts heal when a tablet appears, and KWin can list
 # the pen up to 2 s later: inside the lock, that wait delayed every key press and froze the daemon's calls.
-[ "$MODE" = heal ] && find_pen
-case "$MODE" in toggle|resize|where|suspend|resume|heal|pause) ;;   # a mistyped verb must not toggle the mode
-    *) echo "usage: $(basename "$0") [toggle|resize|where|suspend|resume|heal|pause]" >&2; exit 2;; esac
+case "$MODE" in heal|grabbed) find_pen;; esac
+case "$MODE" in toggle|resize|where|suspend|resume|heal|pause|grabbed) ;;   # a mistyped verb must not toggle the mode
+    *) echo "usage: $(basename "$0") [toggle|resize|where|suspend|resume|heal|pause|grabbed]" >&2; exit 2;; esac
 exec 9>"$RD/lock"; flock -w 5 9 || exit 1   # one run at a time: a long press makes KWin's MOVE toggle and the daemon's OFF toggle land in a row
-[ -f "$CONF" ] && . "$CONF"   # read AFTER the lock: a ring tick queued behind another applies the newest SCALE, not the one it was born with
+read_conf_keys   # read AFTER the lock: a ring tick queued behind another applies the newest SCALE, not the one it was born with
 SCALE=${SCALE:-0.36}; SCALE=${SCALE/,/.}; case "$SCALE" in *[!0-9.]*|*.*.*|.) SCALE=0.36;; esac   # a comma decimal (a hand edit under
 DIM=${DIM:-0.10}; DIM=${DIM/,/.}; case "$DIM" in *[!0-9.]*|*.*.*|.) DIM=0.10;; esac               # a comma locale) reads as a dot; junk = the default
 # The soft cap on SCALE (Tablet Center's two size-limit fields): 0 = no cap on that side. Without one the
@@ -249,9 +330,15 @@ case "$MODE" in
 resize)    # while ON: the conf's SCALE around the area's own centre (the pen's position only when there is no area on record); a queued tick whose width AND dim already match the screen does nothing, so a burst of ticks is two resizes, not a staircase. The cursor scales with the area: the pen's place IN the area stays, not its place on the screen
     if [ -f "$STATE" ]; then
         set -- $(cat "$AREA" 2>/dev/null)
+        FITTED=""
+        if [ -n "${11:-}" ]; then            # UNU-03: the pixels follow the live screen, from the fractions
+            X=$1 Y=$2 W=$3 H=$4 SW=$6 SH=$7 FX=$8 FY=$9 FW=${10} FH=${11}
+            fit_area
+            [ -n "$FITTED" ] && set -- "$X" "$Y" "$W" "$H" "$5" "$SW" "$SH"
+        fi
         if [ -n "${7:-}" ]; then
             TARGET_W=$(awk -v s="$SCALE" -v lo="$SCALE_MIN" -v hi="$SCALE_MAX" -v sw="$6" 'BEGIN{ '"$CAP"' w = int(sw * s + 0.5); if (w < 1) w = 1; printf "%d", w }')
-            if [ "$TARGET_W" != "$3" ] || [ "$DIM" != "$5" ]; then
+            if [ -n "$FITTED" ] || [ "$TARGET_W" != "$3" ] || [ "$DIM" != "$5" ]; then
                 CENTRE=$(awk -v x="$1" -v y="$2" -v w="$3" -v h="$4" 'BEGIN{printf "%.1f %.1f", x + w / 2, y + h / 2}')
                 area_math centre $CENTRE "$6" "$7" && apply_area
             fi
@@ -266,7 +353,8 @@ where)     # prints "X Y W H DIM SW SH"; nothing changes
     ;;
 # ── chunk: suspend
 suspend)   # while ON: the base mapping for the moment, precision mode stays on (a relocation is aimed: the cursor roams)
-    if [ -f "$STATE" ]; then
+    if [ -f "$STATE" ] && ! DRIVER_WAIT=0 driver_send full; then   # the pen driver trial: its helper maps the whole screen. Never a wait (a
+                                                                  # drag start must not freeze the daemon): KWin gets the base, which it holds already
         set -- $(cat "$STATE")
         busctl --user set-property $KW $MGR/$pen $IF outputArea '(dddd)' "${1:-0}" "${2:-0}" "${3:-1}" "${4:-1}"
     fi
@@ -298,6 +386,22 @@ heal)      # a tablet appeared (tablet-hover.py, in the background): ON = the pe
         [ -f "$STATE" ] || heal_off
     fi
     ;;
+# ── chunk: grabbed
+grabbed)   # the pen driver's helper grabbed the pen (it runs this detached after every grab). While ON: every tablet tool KWin
+           # lists goes back to the base (a rectangle a KWin-path write left on the grabbed original would map the pen again
+           # the moment the helper lets go), then the area on record goes to the helper (a restart forgot it). No helper
+           # after all: remap's KWin path puts the rectangle back on the original, the live pen.
+    if [ -f "$STATE" ]; then
+        set -- $(cat "$STATE")
+        for n in $(busctl --user get-property $KW $MGR $KW.InputDeviceManager devicesSysNames 2>/dev/null | tr -d '"' | cut -d' ' -f3-); do
+            case "$(busctl --user get-property $KW $MGR/$n $IF tabletTool 2>/dev/null)" in
+                *true*) busctl --user set-property $KW $MGR/$n $IF outputArea '(dddd)' "${1:-0}" "${2:-0}" "${3:-1}" "${4:-1}";;
+            esac
+        done
+        unpersist "${1:-0}" "${2:-0}" "${3:-1}" "${4:-1}"   # KWin wrote the base into kcminputrc: deleted = the whole screen
+        remap
+    fi
+    ;;
 # ── chunk: toggle
 *)
     if [ ! -f "$STATE" ] && unpause && [ -f "$STATE" ]; then
@@ -313,7 +417,9 @@ heal)      # a tablet appeared (tablet-hover.py, in the background): ON = the pe
         rm -f "$MARK"            # relocation confirmed: re-map at the pen, the saved base mapping stays
         compute_area && apply_area
     else
-        if [ -n "$pen" ]; then   # the tablet is here: its live mapping goes back to the base
+        if driver_send full; then
+            :                    # the pen driver trial: its helper maps the whole screen again, KWin was never changed
+        elif [ -n "$pen" ]; then   # the tablet is here: its live mapping goes back to the base
             ledger
             set -- $(cat "$STATE")
             busctl --user set-property $KW $MGR/$pen $IF outputArea '(dddd)' "${1:-0}" "${2:-0}" "${3:-1}" "${4:-1}" &&

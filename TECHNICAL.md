@@ -282,9 +282,12 @@ after that read, so the menu opened one press behind. The touch-sense warp
 `kcminputrc` still owns. The chord is held while the pad key is held, so
 Kando's turbo mode works; the release mirrors the key, and a vanished
 tablet or a daemon exit releases anything still down (the kernel emits
-key-ups when a device is destroyed). A chord is modifiers plus ONE F-key:
-letters resolve through the active layout, and a modifier-only chord would
-form the Meta-tap launcher gesture. Each warp and chord is a journal line
+key-ups when a device is destroyed). A chord is modifiers plus ONE key
+(any key of the helper's 96-code table; Print and the power keys are not in
+it). The helper presses the physical key, so no layout resolves it. A
+modifier-only chord would form the Meta-tap launcher gesture. `chord_down` refuses a press when the keys
+already held plus the new chord hold Ctrl, Alt and one of F1 to F12 without Shift (`chord_hazard`'s rule,
+so a held touch chord Ctrl+Alt plus a press chord F3 is refused too); a refusal writes one journal line. Each warp and chord is a journal line
 (`warp (press): mouse to (x, y)`, `chord (key 2): Meta+Shift+F8 down`), so
 a landing can be checked against `tablet-pen-pos.py --mapped`. In
 precision mode the pen position goes through the area's fractions from the
@@ -546,6 +549,9 @@ their timing.
 
 The conf is `~/.config/tabprec.conf`. Every writer keeps the lines it does
 not own. The daemon re-reads it when a line arrives on its control pipe.
+The daemon holds the pipe open for its whole life (`open_ctl`) and drains it
+while no tablet is here, so a poke with the tablet asleep is accepted and does
+not read as "the pad helper is not running".
 Tablet Center pokes `$XDG_RUNTIME_DIR/tabprec/hover.ctl` after an Apply, a
 touch-register change and a long-press change, the keys the daemon reads;
 the size, dim, reconnect and ring-step saves do not poke, because the toggle
@@ -601,9 +607,13 @@ nothing until the next login, when the daemon rebuilds them from
 `kglobalshortcutsrc`. `uninstall.sh` first calls `unregister` for each entry,
 which frees its key at once, then deletes the entry's keys from that file.
 
-Pad and ring chords: F-keys and modifiers only. KWin resolves a letter
-through the active keyboard layout, so `Meta+Shift+P` sends nothing under a
-Cyrillic layout.
+The plain Press boxes, the pen buttons and the ring: F-keys and modifiers
+only. KWin's button re-binder resolves a letter through the active keyboard
+layout, so `Meta+Shift+P` sends nothing under a Cyrillic layout. The pie
+chords go through the helper's virtual keyboard instead (see `KNOWLEDGE.md`).
+The virtual keyboard registers its 96 key codes once, at start (all below
+0x100, no BTN_*, no KEY_SYSRQ). udev tags it `ID_INPUT_KEYBOARD`; KWin marks
+it an alphanumeric keyboard, which only picks an inert config group.
 
 The udev rule `install.sh` prints (`/etc/udev/rules.d/70-tablet-access.rules`):
 
@@ -620,6 +630,59 @@ opens under the pen.
 Runtime files live in `$XDG_RUNTIME_DIR/tabprec/`. The pen ledgers live in
 `~/.local/state/tabprec/`, because they must outlive a logout.
 `PROJECT_MAP.md` lists them with their writers and readers.
+
+## Pressure record
+
+The pad helper opens the pen's evdev node (the driver's copy when the pen
+driver runs) and counts each stroke's peak pressure in a histogram of 101
+bins per 900 s bucket of pen-in-range time. It keeps the newest 40 buckets
+per profile in `~/.local/state/tabprec/pressure/<profile>.json`. The file is
+written at most once a minute, at a profile switch and at exit (SIGTERM). A
+lost pen node or a node swap ends the stroke under way without counting it
+(`forget`). A failed write logs one journal line per run of failures. The
+file is at most 21 KB. `PRESSURE_RECORD=0` in the conf file opens no node and
+writes no file. `tablet_profiles.pressure_tip` builds the Pen tab tooltip from
+it.
+
+## Per-app profiles
+
+`profiles.ini` holds the rules in `[PerApp]`, `[PerAppProfile]` and
+`[PerAppApps]` (never in a `.tcprofile`: the app rewrites the active profile
+from the live values at every checkpoint). A KWin script
+(`workspace.windowActivated`) calls a D-Bus name nobody owns, and
+`tablet-appfocus.py` reads the call with `busctl monitor`. It starts after the
+first rule and ends when the last rule goes. Its autostart file is a plain
+file on purpose: dpkg would leave a conffile behind on a downgrade to
+version 1, and removes a plain file. An app is a set of window
+names (StartupWMClass, desktop-file stem, the part after the last dot unless
+generic); a window matches when any name is in the set. Dialogs, windows with a
+parent, Kando, plasmashell, krunner, the portals, polkit and the lock screen
+never switch. The follower compares the wished profile with `[Active]` on disk
+and switches only when they differ, after 0.15 s without a focus change and
+when the pad helper's `held` file says no pad key is held (plus 0.25 s after
+the last release). After a failed switch it pauses and shows one notification
+until a profile is switched by hand. All writers of `profiles.ini` go through
+one flock (`$XDG_RUNTIME_DIR/tabprec/profiles.lock`). Without a lock two
+processes lost 996 of 2000 updates in the rig.
+
+## Pen driver
+
+`tablet-pen-driver.py` (user unit `tablet-pen-driver.service`, enabled for
+every user by the package; `ExecCondition=... --check` skips it unless the
+conf says `PEN_DRIVER=1`) opens the pen's evdev node, makes a uinput copy with
+the same ids, name, bits and ranges, then takes an EVIOCGRAB and re-emits
+every report through the copy. Precision mode is arithmetic in the helper: the
+toggle sends `FX FY FW FH` or `full` to the datagram socket
+`$RUNTIME/tabprec/pen-driver.sock`, and ABS_X/ABS_Y are mapped into that
+rectangle. KWin's `outputArea` and `kcminputrc` stay untouched. The socket
+lives for the helper's life and is closed after 5 s without a pen. The toggle
+waits for it (`DRIVER_WAIT`, default 3 s) only while the helper holds
+`pen-driver.lock`. After each grab the helper runs `tablet-precision.sh
+grabbed`, which puts every KWin tablet tool back on the base mapping and sends
+the area on record. Live pen settings go to the original and to the copy. The
+unit has `WatchdogSec=2`. The rescue line `systemctl --user stop
+tablet-pen-driver` ends the process; the kernel then releases the grab. A
+package upgrade restarts the driver; removal stops it for every user.
 
 ## Limitations, in detail
 

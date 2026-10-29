@@ -90,6 +90,8 @@ hostile = ("﻿" + "\r\n".join([
     "CHORD_2=Meta + Shift + F8",        # survives -> disables pad key 1
     "CHORD_4=zzz",                      # invalid -> dropped, pad key 3 left alone (key 2 is guarded anyway: the precision key)
     "TOUCH_CHORD_3=Meta+Shift+F7",      # a full chord ON the precision key -> dropped, key untouched
+    "CHORD_7=Ctrl+[",                   # a typed key (KEY-01): survives as letters only, sourced whole
+    "CHORD_8=Ctrl+'$(touch pwned)'",    # quote and substitution: no key name -> dropped
     "OutputArea=1",                     # unknown key -> dropped
     "[Pad]",
     "2=Key,Meta+Shift+F12",             # the precision key's own binding, as checkpoint would capture it
@@ -106,6 +108,8 @@ declared = subprocess.run(["env", "-i", "bash", "-c", f'. "{wp.CONF}"; declare -
                           capture_output=True, text=True, cwd=SCRATCH).stdout             # a slipped payload lands there
 check("hostile-import: pwned was never created", not (Path.cwd() / "pwned").exists() and not (SCRATCH / "pwned").exists())
 check("hostile-import: CHORD_2 reads Meta+Shift+F8", 'CHORD_2="Meta+Shift+F8"' in declared)
+check("hostile-import: CHORD_7 Ctrl+[ is written as Ctrl+BracketLeft; the quoted CHORD_8 never reached the conf",
+      'CHORD_7="Ctrl+BracketLeft"' in declared and "CHORD_8" not in declared)
 check("hostile-import: pad key 1 disabled", wp.kreadconfig6(["ButtonRebinds", "Tablet", PAD], "1") == "Disabled")
 check("hostile-import: pad key 3 NOT disabled (invalid chord dropped, left alone)", wp.kreadconfig6(["ButtonRebinds", "Tablet", PAD], "3") != "Disabled")
 check("hostile-import: the HOVER_MASK key's own binding is untouched", wp.kreadconfig6(["ButtonRebinds", "Tablet", PAD], "2") == "Key,Meta+Shift+F12")
@@ -166,7 +170,7 @@ check("switch-order: no reconfigure anywhere", not any("reconfigure" in l for l 
 # =========================================================== owned-and-kept
 reset_data()
 reset_kcminputrc()
-wp.CONF.write_text("WARP=0\n# a comment\nSCALE=0.50\n")
+wp.CONF.write_text("WARP=0\nPRESSURE_RECORD=0\n# a comment\nSCALE=0.50\n")
 sec = wp.blank_sections()
 sec["Conf"]["DIM"] = "0.20"       # SCALE stays absent/empty in the target -> removed from the conf
 wp.write_profile(wp.profile_path("OwnedKept"), sec)
@@ -174,6 +178,7 @@ wp.switch_to("OwnedKept", pad=None, pen=None, sysname=None)
 conf_lines = wp.CONF.read_text().splitlines()
 check("owned-and-kept: an owned key empty in the profile is removed", not any(l.startswith("SCALE=") for l in conf_lines))
 check("owned-and-kept: WARP=0 kept", "WARP=0" in conf_lines)
+check("owned-and-kept: PRESSURE_RECORD=0 (the pressure record's off switch) kept", "PRESSURE_RECORD=0" in conf_lines)
 check("owned-and-kept: the comment line kept", "# a comment" in conf_lines)
 check("owned-and-kept: DIM written", "DIM=0.20" in conf_lines)
 
@@ -366,6 +371,61 @@ first, notes = wp.package_setup(here=wp.PKG_DIR)
 del os.environ["STUB_KEY_TAKEN"]
 check("package: a key another action owns is named, not reported as registered",
       first and wp.SETUP_MARK.exists() and notes[0].startswith("No key for: Precision mode toggle"))
+
+# E7: a live write reaches every twin of the pen (the pen driver's copy and the grabbed original: same name, vendor and
+# product), in any order, never another pen. KWin lists event9 and event5 named like the pen and event12, a Wacom One Pen.
+FAKE = {"event9": ("Wacom Intuos Pro M Pen", "1386", "864"), "event5": ("Wacom Intuos Pro M Pen", "1386", "864"),
+        "event12": ("Wacom One Pen", "1386", "1015"), "event3": ("Wacom Intuos Pro M Pad", "1386", "864")}
+sets = []
+
+
+def fake_run(cmd, **k):
+    out, rc = "", 0
+    node = cmd[4].rsplit("/", 1)[-1]
+    if cmd[2] == "set-property":
+        sets.append(node)
+    elif cmd[-1] == "devicesSysNames":
+        out = "as 4 " + " ".join(f'"{n}"' for n in FAKE)
+    elif node in FAKE:
+        name, vendor, product = FAKE[node]
+        out = {"name": f's "{name}"', "vendor": f"u {vendor}", "product": f"u {product}",
+               "tabletTool": "b " + str(node != "event3").lower()}.get(cmd[-1], "")
+    return type("R", (), {"returncode": rc, "stdout": out})()
+
+
+real_run, wp.subprocess.run = wp.subprocess.run, fake_run
+wp.apply_left_handed(True, None, "event5")
+wp.subprocess.run = real_run
+check("E7 a live write goes to both twins (event5, event9), never the other pen event12", sorted(sets) == ["event5", "event9"])
+
+# ============================================================ chord-guard
+# A chord KWin turns into a text-console switch (Ctrl+Alt+F1..F12, no Shift, Meta or not) never
+# reaches a pad key, ring mode, pen button or pie chord through a profile; F20 (microphone mute) warns.
+reset_data()
+wp.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+sec = wp.blank_sections()
+sec["Pad"].update({"0": "Key,Ctrl+Alt+F1", "1": "Key,Meta+Control+Alt+F12", "2": "Key,Ctrl+Alt+Shift+F1",
+                   "3": "Key,Ctrl+Alt+F20", "4": "Key,Meta+Shift+F5"})
+sec["Pen"]["331"] = "Key,ctrl+alt+f3"
+sec["Ring"]["0"] = "AxisKey,Ctrl+Alt+F2,Meta+Shift+F7,600"
+sec["Ring"]["1"] = "AxisKey,Meta+Shift+F6,Meta+Shift+F7,600"
+sec["Conf"]["CHORD_1"] = "Ctrl+Alt+F4"
+sec["Conf"]["TOUCH_CHORD_2"] = "Ctrl+Alt+F5"
+sec["Conf"]["CHORD_8"] = "Meta+Ctrl+Alt+Shift+F5"
+wp.write_profile(wp.profile_path("ChordGuard"), sec)
+got, notes = wp.read_profile(wp.profile_path("ChordGuard"))
+check("chord-guard: Ctrl+Alt+F1 and Meta+Ctrl+Alt+F12 on a pad key are dropped, with the reason",
+      got["Pad"]["0"] == "" and got["Pad"]["1"] == ""
+      and sum("text console" in n for n in notes) >= 6)
+check("chord-guard: with Shift, or a Ctrl+Alt+F20, or Meta+Shift+F5, the pad key stays",
+      got["Pad"]["2"] == "Key,Ctrl+Alt+Shift+F1" and got["Pad"]["3"] == "Key,Ctrl+Alt+F20"
+      and got["Pad"]["4"] == "Key,Meta+Shift+F5")
+check("chord-guard: F20 is kept and warned (microphone)",
+      any("microphone" in n and "Pad key 4" in n for n in notes))
+check("chord-guard: a pen button, a ring mode and the two pie chords are dropped too; a clean ring mode stays",
+      got["Pen"]["331"] == "" and got["Ring"]["0"] == "" and got["Ring"]["1"].startswith("AxisKey,Meta+Shift+F6")
+      and got["Conf"]["CHORD_1"] == "" and got["Conf"]["TOUCH_CHORD_2"] == ""
+      and got["Conf"]["CHORD_8"] == "Meta+Ctrl+Alt+Shift+F5")
 
 print(f"failures: {fails}")
 sys.exit(1 if fails else 0)

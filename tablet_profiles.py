@@ -3,8 +3,10 @@
 import base64
 import configparser
 import fcntl
+import hashlib
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -13,6 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 # ── chunk: paths
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tabprec.conf"
@@ -22,6 +25,8 @@ CTL = RD / "hover.ctl"
 DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "tablet-center"
 PROFILES_DIR = DATA / "profiles"
 BACKUP_DIR = DATA / "backup"
+PRESSURE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "tabprec" / "pressure"   # the helper's records; main never reads them
+PRESSURE_LIGHT, PRESSURE_HARD, PRESSURE_MIN_STROKES = 10, 95, 20   # percentile ranks of the stroke peaks the tooltip names; strokes needed before it names any
 PROFILES_INI = DATA / "profiles.ini"
 TOGGLE = Path(__file__).resolve().parent / "tablet-precision.sh"   # beside this file: ~/.local/bin or the package folder
 TOGGLE_COMPONENT = "net.local.tabprec-toggle.desktop"
@@ -111,6 +116,23 @@ class conf_lock:
         return False
 
 
+CONF_LINE = re.compile(r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)")
+
+
+# ── chunk: parse_conf_line
+def parse_conf_line(line):
+    """THE conf line shape (PROJECT_MAP conf contract; the daemon, the size preview and both
+    shell scripts read the same one): KEY [spaces] = [spaces] VALUE, a # starts a comment, a
+    value in one pair of quotes loses them. (key, value), or None for any other line."""
+    m = CONF_LINE.fullmatch(line.split("#", 1)[0])
+    if not m:
+        return None
+    val = m.group(2).strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+        val = val[1:-1]
+    return m.group(1), val
+
+
 # ── chunk: save_conf_key
 def save_conf_key(key, value):
     """Set key=value in tabprec.conf, keeping every other line. Locked and
@@ -123,7 +145,7 @@ def save_conf_key(key, value):
             lines = []
         out, done = [], False
         for line in lines:
-            if line.split("=", 1)[0].strip() == key:
+            if (parse_conf_line(line) or (None,))[0] == key:
                 if not done:
                     out.append(f"{key}={value}")
                     done = True
@@ -143,7 +165,7 @@ def drop_conf_key(key):
             lines = CONF.read_text().splitlines()
         except OSError:
             return
-        out = [line for line in lines if line.split("=", 1)[0].strip() != key]
+        out = [line for line in lines if (parse_conf_line(line) or (None,))[0] != key]
         if len(out) != len(lines):
             atomic_write(CONF, "\n".join(out) + ("\n" if out else ""))
 
@@ -202,13 +224,34 @@ def kwrite_literal(groups, key, value, file="kcminputrc"):
 # ── chunk: busctl_set
 def busctl_set(sysname, prop, sig, value):
     """The KWin InputDevice's live property - effect only, never persistence
-    (KWin's own setter carries no notify and skips an unchanged value)."""
+    (KWin's own setter carries no notify and skips an unchanged value).
+    True = busctl exited 0; False = it failed or could not run (a stale node)."""
     try:
-        subprocess.run(["busctl", "--user", "set-property", "org.kde.KWin",
-                       f"/org/kde/KWin/InputDevice/{sysname}", "org.kde.KWin.InputDevice",
-                       prop, sig, value], capture_output=True, text=True, timeout=3)
+        return subprocess.run(["busctl", "--user", "set-property", "org.kde.KWin",
+                              f"/org/kde/KWin/InputDevice/{sysname}", "org.kde.KWin.InputDevice",
+                              prop, sig, value], capture_output=True, text=True, timeout=3).returncode == 0
     except (OSError, subprocess.SubprocessError):
-        pass
+        return False
+
+
+# ── chunk: pen_twins
+def pen_twins(sysname):
+    """sysname plus every other KWin tablet tool with its name, vendor and product, in KWin's order: while the pen
+    driver runs, its copy (what the artist draws with) and the grabbed original (what the daemon, the toggle and the
+    pen position read) both take a live write. One walk over the device list per apply; no driver = [sysname]."""
+    def ident(node):
+        return tuple(busctl_get(node, prop) for prop in ("name", "vendor", "product"))
+    want = ident(sysname)
+    if not all(want):
+        return [sysname]
+    try:
+        out = subprocess.run(["busctl", "--user", "get-property", "org.kde.KWin", "/org/kde/KWin/InputDevice",
+                              "org.kde.KWin.InputDeviceManager", "devicesSysNames"],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    nodes = out.replace('"', " ").split()[2:]
+    return [sysname] + [n for n in nodes if n != sysname and busctl_get(n, "tabletTool") == "true" and ident(n) == want]
 
 
 # ── chunk: busctl_get
@@ -247,6 +290,51 @@ def load_parse_chord():
         return mod.parse_chord
     except Exception:                    # noqa: BLE001 - any import trouble = no validation
         return None
+
+
+# ── chunk: conf_chord
+def conf_chord(text):
+    """A chord as tabprec.conf may hold it (tablet-pointer-warp.py safe_chord: the toggle script
+    SOURCES the conf, so no quote, bracket or '#' may reach it). The text unchanged when the helper's
+    module cannot be loaded or has no word for it - _line_ok still stands behind."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "tablet_pointer_warp", Path(__file__).resolve().parent / "tablet-pointer-warp.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.safe_chord(text) or text
+    except Exception:                    # noqa: BLE001 - any import trouble = the text as typed
+        return text
+
+
+# ── chunk: chord_hazard
+def chord_hazard(text):
+    """'console' for Ctrl+Alt+F1..F12 without Shift (KWin's virtual-terminal filter fires on the
+    xkb level of Ctrl+Alt; Meta changes nothing, Shift moves the key to level 2), 'mic' for any
+    F20 chord, else None. Case and the Ctrl/Control spellings do not matter."""
+    parts = {p.strip().lower() for p in (text or "").split("+")}
+    if parts & {"ctrl", "control"} and "alt" in parts and "shift" not in parts \
+            and parts & {f"f{n}" for n in range(1, 13)}:
+        return "console"
+    return "mic" if "f20" in parts else None
+
+
+HAZARD_TEXT = {
+    "console": "'{chord}' switches the screen to a text console (KWin does that on Ctrl+Alt+F1 to F12 "
+               "without Shift, Meta or not). Add Shift to use it",
+    "mic": "'{chord}' is the microphone mute key on most keyboards. It works as a shortcut, "
+           "but it mutes the microphone",
+}
+
+
+# ── chunk: hazard_note
+def hazard_note(label, text):
+    """(kind, "<label>: <sentence>") for a chord chord_hazard flags, else (None, None). The
+    caller adds what happens next: a console chord is refused, an F20 chord only warned."""
+    kind = chord_hazard(text)
+    if not kind:
+        return None, None
+    return kind, f"{label}: " + HAZARD_TEXT[kind].format(chord=text)
 
 
 # ── chunk: pen_groups_in_kcminputrc
@@ -300,7 +388,9 @@ def apply_pressure(curve, rmin, rmax, pen_name, sysname, status=None):
     (created if absent) so a curve set on one transport survives on the
     other. Then, when connected (sysname given), the live D-Bus properties -
     the only route with an immediate effect. Qt-free: the switch reuses this,
-    so there is one pressure write path."""
+    so there is one pressure write path. Returns the warning when a live
+    write failed (the node is stale: a bus switch renumbered the pen; the
+    saved values apply when the pen reconnects), else None; status gets it too."""
     def note(msg):
         if status:
             status(msg)
@@ -308,7 +398,7 @@ def apply_pressure(curve, rmin, rmax, pen_name, sysname, status=None):
     pairs = pen_groups_in_kcminputrc(pen_name)
     if not pairs and not sysname:
         note("Pressure settings apply after the pen connects once.")
-        return
+        return None
     libwacom_dir = os.environ.get("WCC_LIBWACOM_DIR", "/usr/share/libwacom")
     extra = libwacom_sibling_pairs(*pairs[0], libwacom_dir) if pairs else None
     if extra:
@@ -324,10 +414,17 @@ def apply_pressure(curve, rmin, rmax, pen_name, sysname, status=None):
                            ("TabletToolPressureRangeMax", str(rmax))):
             kwrite_literal(["Libinput", vendor, product, pen_name], key, value)
     if sysname:
-        for prop, sig, value in (("pressureCurve", "s", curve),
-                                 ("pressureRangeMin", "d", str(rmin)),
-                                 ("pressureRangeMax", "d", str(rmax))):
-            busctl_set(sysname, prop, sig, value)
+        twins = pen_twins(sysname)
+        failed = [prop for prop, sig, value in (("pressureCurve", "s", curve),
+                                                ("pressureRangeMin", "d", str(rmin)),
+                                                ("pressureRangeMax", "d", str(rmax)))
+                  if not all([busctl_set(node, prop, sig, value) for node in twins])]   # a list: every twin is written
+        if failed:
+            warning = ("The pen did not take the pressure change right now (its connection may have changed). "
+                       "The settings are saved and apply when the pen reconnects.")
+            note(warning)
+            return warning
+    return None
 
 
 # ── chunk: apply_left_handed
@@ -358,7 +455,8 @@ def apply_left_handed(on, pen_name, sysname, status=None):
     for vendor, product in pairs:
         kwrite_literal(["Libinput", vendor, product, pen_name], "LeftHanded", value)
     if sysname:
-        busctl_set(sysname, "leftHanded", "b", value)
+        for node in pen_twins(sysname):
+            busctl_set(node, "leftHanded", "b", value)
 
 
 # ── chunk: left_handed_state
@@ -435,6 +533,45 @@ def _write_ini(cp):
     atomic_write(PROFILES_INI, buf.getvalue())
 
 
+# ── chunk: ini_lock
+class ini_lock:
+    """$RD/profiles.lock around one read-modify-write of profiles.ini. wait=None waits for as long as
+    it takes (a holder keeps it for well under a millisecond); a number of seconds raises TimeoutError
+    when another writer holds it that long - the caller must write NOTHING then."""
+
+    def __init__(self, wait=5):
+        self.wait = wait
+
+    def __enter__(self):
+        RD.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(RD / "profiles.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        deadline = None if self.wait is None else time.monotonic() + self.wait
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if deadline is not None and time.monotonic() >= deadline:
+                    os.close(self._fd)
+                    raise TimeoutError("profiles.ini is busy")
+                time.sleep(0.01)
+
+    def __exit__(self, *exc):
+        fcntl.flock(self._fd, fcntl.LOCK_UN)
+        os.close(self._fd)
+        return False
+
+
+# ── chunk: update_ini
+def update_ini(change, wait=5):
+    """The only way to change profiles.ini: read it INSIDE the lock, let change(cp) edit it, write it.
+    A stale copy held elsewhere can never overwrite a newer write. TimeoutError: nothing was written."""
+    with ini_lock(wait):
+        cp = _read_ini()
+        change(cp)
+        _write_ini(cp)
+
+
 # ── chunk: get_device_ini
 def get_device_ini():
     cp = _read_ini()
@@ -445,14 +582,69 @@ def get_device_ini():
 def save_device(pad, pen):
     """Only a live KWin detection calls this - the asleep/disconnected
     fallback chains read profiles.ini but never write it."""
-    cp = _read_ini()
-    if not cp.has_section("Device"):
-        cp.add_section("Device")
-    if pad:
-        cp.set("Device", "pad", pad)
-    if pen:
-        cp.set("Device", "pen", pen)
-    _write_ini(cp)
+    def change(cp):
+        if not cp.has_section("Device"):
+            cp.add_section("Device")
+        if pad:
+            cp.set("Device", "pad", pad)
+        if pen:
+            cp.set("Device", "pen", pen)
+    try:
+        update_ini(change)
+    except TimeoutError:
+        pass                                    # the next detection writes it again
+
+
+# ── chunk: pressure_file
+def pressure_file(profile):
+    """The helper's record file of one profile (tablet-hover.py pressure_file gives the same path)."""
+    name = quote(profile, safe=" ") if profile else "(none)"
+    if len(name) > 200:
+        name = name[:150] + "-" + hashlib.sha1(profile.encode("utf-8")).hexdigest()[:10]
+    return PRESSURE_DIR / (name + ".json")
+
+
+# ── chunk: pressure_stats
+def pressure_stats(profile):
+    """(strokes, hours, light, hard) over the helper's record of this profile: the strokes in its window,
+    the drawing hours that window holds, and the PRESSURE_LIGHT / PRESSURE_HARD percentile (nearest rank)
+    of the stroke peaks in whole percent. None = no readable record."""
+    try:
+        doc = json.loads(pressure_file(profile).read_text(encoding="utf-8"))
+        if doc["v"] != 1:
+            return None
+        hist = [0] * 101
+        for bins in doc["buckets"].values():
+            for pct, count in enumerate(bins[:101]):
+                hist[pct] += int(count)
+        hours = min(float(doc["active_s"]), doc["keep"] * doc["bucket_s"]) / 3600
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    total = sum(hist)
+    if not total:
+        return (0, hours, None, None)
+
+    def rank(percent):
+        need, seen = -(-percent * total // 100), 0
+        for pct, count in enumerate(hist):
+            seen += count
+            if seen >= need:
+                return pct
+    return (total, hours, rank(PRESSURE_LIGHT), rank(PRESSURE_HARD))
+
+
+# ── chunk: pressure_tip
+def pressure_tip(profile):
+    """The Pen tab curve's tooltip: numbers from the helper's record of the active profile."""
+    got = pressure_stats(profile)
+    if got is None or got[0] < PRESSURE_MIN_STROKES:
+        return (f"Pressure record: {got[0] if got else 0} strokes so far, "
+                f"{PRESSURE_MIN_STROKES} are needed. It fills while the pad helper runs and you draw.")
+    total, hours, light, hard = got
+    minutes = max(1, round(hours * 60))
+    span = f"{round(hours)} hours" if hours >= 1.5 else f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return (f"Last {span}: your light strokes peak near {light} %, your hardest reach {hard} % "
+            f"({total} strokes, raw pen pressure before the curve).")
 
 
 # ── chunk: active_profile_name
@@ -463,11 +655,12 @@ def active_profile_name():
 
 # ── chunk: set_active_profile
 def set_active_profile(name):
-    cp = _read_ini()
-    if not cp.has_section("Active"):
-        cp.add_section("Active")
-    cp.set("Active", "name", name)
-    _write_ini(cp)
+    """Waits for the lock as long as it takes: it is the last step of a switch and must not be lost."""
+    def change(cp):
+        if not cp.has_section("Active"):
+            cp.add_section("Active")
+        cp.set("Active", "name", name)
+    update_ini(change, wait=None)
 
 
 # ── chunk: get_grid
@@ -481,11 +674,261 @@ def get_grid():
 
 # ── chunk: set_grid_cell
 def set_grid_cell(cell, name):
-    cp = _read_ini()
-    if not cp.has_section("Grid"):
-        cp.add_section("Grid")
-    cp.set("Grid", str(cell), name)
-    _write_ini(cp)
+    def change(cp):
+        if not cp.has_section("Grid"):
+            cp.add_section("Grid")
+        cp.set("Grid", str(cell), name)
+    update_ini(change)
+
+
+# ── chunk: _perapp_read
+def _perapp_read(cp):
+    default = cp.get("PerApp", "default", fallback="").strip()
+    rules = []
+    if cp.has_section("PerAppProfile"):
+        for idx, name in cp.items("PerAppProfile"):
+            apps = perapp_split(cp.get("PerAppApps", idx, fallback=""))
+            if name.strip() and apps:
+                rules.append((name.strip(), apps))
+    return default, rules
+
+
+# ── chunk: perapp_get
+def perapp_get():
+    """(default profile name or '', [(profile, [app, ...]), ...]) from
+    profiles.ini [PerApp] / [PerAppProfile] / [PerAppApps]. profiles.ini keeps
+    unknown sections, so 'main' ignores these and leaves them in place."""
+    return _perapp_read(_read_ini())
+
+
+# ── chunk: _perapp_write
+def _perapp_write(cp, default, rules):
+    for sec in ("PerApp", "PerAppProfile", "PerAppApps"):
+        cp.remove_section(sec)
+    rules = [(name, perapp_split(apps) if isinstance(apps, str) else apps) for name, apps in rules]
+    rules = [(name, apps) for name, apps in rules if name and apps]
+    if default or rules:
+        cp.add_section("PerApp")
+        cp.set("PerApp", "default", default)
+        cp.add_section("PerAppProfile")
+        cp.add_section("PerAppApps")
+        for n, (name, apps) in enumerate(rules, 1):
+            cp.set("PerAppProfile", str(n), name)
+            cp.set("PerAppApps", str(n), ";".join(apps))
+
+
+# ── chunk: perapp_set
+def perapp_set(default, rules):
+    """Replace the whole per-app block; rules = [(profile, [app, ...])]. Empty
+    default and no rules removes the three sections (the feature is off)."""
+    update_ini(lambda cp: _perapp_write(cp, default, rules))
+
+
+# ── chunk: perapp_edit
+def perapp_edit(change):
+    """Change the per-app block inside the lock: change(default, rules) -> (default, rules), both read
+    from the file as it is NOW. Returns what was written. TimeoutError: nothing was written."""
+    done = []
+
+    def run(cp):
+        default, rules = change(*_perapp_read(cp))
+        _perapp_write(cp, default, rules)
+        done[:] = _perapp_read(cp)
+    update_ini(run)
+    return tuple(done)
+
+
+# ── chunk: perapp_related
+def perapp_related(a, b):
+    """The engine's relation (perapp_decide): equal, or one ends with '.' + the other."""
+    return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+# ── chunk: perapp_split
+def perapp_split(text):
+    """The apps of one rule from typed text: comma, semicolon or newline
+    separated, lower case, a trailing '.desktop' dropped, duplicates removed."""
+    out = []
+    for part in re.split(r"[,;\n]", text or ""):
+        part = part.strip().lower()
+        if part.endswith(".desktop"):
+            part = part[:-len(".desktop")]
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
+PERAPP_IGNORE = {"kando", "tablet-center", "tablet_center", "plasmashell", "krunner", "kwin_wayland",
+                 "tablet_center.py", "xdg-desktop-portal-kde", "org.freedesktop.impl.portal.desktop.kde",
+                 "org.kde.polkit-kde-authentication-agent-1", "org.kde.kdialog", "ksmserver-logout-greeter",
+                 "org.kde.kscreenlocker_greet", "ksplashqml", "kded6", "org.kde.spectacle"}
+PERAPP_TRANSIENT = {"dialog", "utility", "splash", "notification", "criticalnotification", "osd",
+                    "onscreendisplay", "popupmenu", "dropdownmenu", "tooltip", "combobox", "dnd",
+                    "menu", "toolbar", "dock", "desktop", "appletpopup", "lowestlayer", "specialwindow"}
+
+
+DESKTOP_GENERIC = {"desktop", "app", "client", "studio", "editor", "viewer", "player", "browser", "settings",
+                   "manager", "gui", "home", "sms"}
+
+
+# ── chunk: desktop_keys
+def desktop_keys(stem, wmclass="", stems=(), snap=False):
+    """The window names one installed app answers to, lower case, for the per-app rules: its
+    StartupWMClass (X11 windows), the whole desktop-file stem (Wayland windows) and the stem's part after the
+    last dot (a snap file loses its '<snap>_' first), unless that part is generic or ends 2+ installed stems."""
+    stem = stem.lower()
+    base = stem.split("_", 1)[1] if snap and "_" in stem else stem
+    last = base.rsplit(".", 1)[-1]
+    if last in DESKTOP_GENERIC or sum(1 for t in stems if t == last or t.endswith("." + last)) > 1:
+        last = ""
+    out = []
+    for key in (str(wmclass).strip().lower(), stem, last):
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+# ── chunk: desktop_apps
+def desktop_apps():
+    """[{'id', 'name', 'icon', 'keys'}] of the installed apps a person launches (Type=Application; NoDisplay,
+    Hidden, NotShowIn=KDE and an OnlyShowIn without KDE left out), XDG_DATA_HOME then XDG_DATA_DIRS, the first
+    folder wins per id. Sorted by name."""
+    dirs = [Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")]
+    dirs += [Path(d) for d in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if d]
+    seen, found = set(), []
+    for base in dirs:
+        folder = base / "applications"
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*.desktop")):
+            ident = str(path.relative_to(folder)).replace("/", "-")
+            if ident in seen:
+                continue
+            cp = configparser.RawConfigParser(strict=False, interpolation=None)
+            try:
+                cp.read(path, encoding="utf-8")
+                entry = cp["Desktop Entry"]
+            except (OSError, configparser.Error, KeyError, UnicodeDecodeError):
+                continue
+            seen.add(ident)
+            if entry.get("Type", "") != "Application" or entry.get("NoDisplay", "").lower() == "true" \
+                    or entry.get("Hidden", "").lower() == "true" or "KDE" in entry.get("NotShowIn", "") \
+                    or (entry.get("OnlyShowIn") and "KDE" not in entry.get("OnlyShowIn", "")):
+                continue
+            found.append((ident[:-len(".desktop")], entry, "snapd" in path.parts))
+    stems = [ident.lower() for ident, _, _ in found]
+    apps = [{"id": ident, "name": entry.get("Name", "").strip() or ident, "icon": entry.get("Icon", "").strip(),
+             "keys": desktop_keys(ident, entry.get("StartupWMClass", ""), stems, snap)}
+            for ident, entry, snap in found]
+    return sorted(apps, key=lambda a: a["name"].lower())
+
+
+# ── chunk: seen_apps
+def seen_apps():
+    """The window classes the follower saw with focus since login, newest first."""
+    try:
+        return list(reversed((RD / "seen-apps").read_text().split()))
+    except OSError:
+        return []
+
+
+# ── chunk: perapp_rows
+def perapp_rows(keys, apps):
+    """The keys of one profile as rows for a person: [{'name', 'icon', 'keys'}]. An installed app claims the
+    keys that relate to one of its own (the engine's relation); a key no app claims is a row of its own."""
+    rows, left = [], list(keys)
+    for app in apps:
+        mine = [k for k in left if any(perapp_related(k, a) for a in app["keys"])]
+        if mine:
+            rows.append({"name": app["name"], "icon": app["icon"], "keys": mine})
+            left = [k for k in left if k not in mine]
+    rows += [{"name": k, "icon": "", "keys": [k]} for k in left]
+    return sorted(rows, key=lambda r: r["name"].lower())
+
+
+# ── chunk: perapp_add
+def perapp_add(profile, keys, apps=()):
+    """Give the app named by keys to profile, inside the lock. Another profile's keys that relate to them go
+    (with every key of the installed app they belong to): one owner per app. Returns (default, rules)."""
+    keys = perapp_split(";".join(keys))
+
+    def change(default, rules):
+        gone = {k for _, ks in rules for k in ks if any(perapp_related(k, n) for n in keys)}
+        for app in apps:
+            if any(perapp_related(k, a) for k in gone for a in app["keys"]):
+                gone |= {k for _, ks in rules for k in ks if any(perapp_related(k, a) for a in app["keys"])}
+        out = []
+        for name, ks in rules:
+            ks = [k for k in ks if name == profile or k not in gone]
+            if name == profile:
+                ks = ks + [k for k in keys if k not in ks]
+            out.append((name, ks))
+        if profile not in [n for n, _ in out]:
+            out.append((profile, keys))
+        return default, out
+    return perapp_edit(change)
+
+
+# ── chunk: perapp_remove
+def perapp_remove(profile, keys):
+    """Take these keys off profile's row, inside the lock. Returns (default, rules)."""
+    drop = set(keys)
+    return perapp_edit(lambda default, rules: (default, [(n, [k for k in ks if n != profile or k not in drop])
+                                                         for n, ks in rules]))
+
+
+# ── chunk: perapp_default
+def perapp_default(profile, on):
+    """Make profile the default (on) or, when it is the default, none (off), inside the lock."""
+    return perapp_edit(lambda default, rules: ((profile if on else ("" if default == profile else default)), rules))
+
+
+# ── chunk: perapp_ignored
+def perapp_ignored(name):
+    """True when a class or desktop-file name is on the ignore list: the whole name or the part after
+    the last dot (Kando's pie reads `menu.kando.kando`, the list holds `kando`)."""
+    name = str(name).strip().lower()
+    return bool(name) and (name in PERAPP_IGNORE or name.rsplit(".", 1)[-1] in PERAPP_IGNORE)
+
+
+# ── chunk: perapp_decide
+def perapp_decide(event, default, rules):
+    """What one focus event means: ('ignore', why) for a window that never
+    switches (none, transient, a listed class); ('want', profile) for the
+    profile that app asks for, else the default's; ('keep', why) when no
+    default is marked and no rule matches. `event` is the KWin script's dict:
+    c = resourceClass, d = desktopFileName, t = window type, nw = a normal
+    window, dlg / tr / sp = dialog / has a parent window / special window. The caller has dropped
+    the rules and the default that name a profile which no longer exists."""
+    if not event:
+        return "ignore", "no window"
+    cls = str(event.get("c", "")).strip().lower()
+    dfn = str(event.get("d", "")).strip().lower()
+    if dfn.endswith(".desktop"):
+        dfn = dfn[:-len(".desktop")]
+    if event.get("dlg") or event.get("tr") or event.get("sp") or event.get("nw") is False \
+            or str(event.get("t", "")).lower() in PERAPP_TRANSIENT:
+        return "ignore", "transient or dialog window"
+    if perapp_ignored(cls) or perapp_ignored(dfn):
+        return "ignore", "listed window"
+    if not cls and not dfn:
+        return "ignore", "no class"
+    for name, apps in rules:
+        if any(app in (cls, dfn) or cls.endswith("." + app) or dfn.endswith("." + app) for app in apps):
+            return "want", name
+    if default:
+        return "want", default
+    return "keep", "no default profile"
+
+
+# ── chunk: follower_running
+def follower_running():
+    """True while tablet-appfocus.py runs: its pid file names a live process of that script."""
+    try:
+        pid = int((RD / "appfocus.pid").read_text().split()[0])
+        return b"tablet-appfocus" in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError, IndexError):
+        return False
 
 
 # ── chunk: profile_path
@@ -588,6 +1031,11 @@ def _validate_pad_or_pen(value, label):
         return value, None
     if re.fullmatch(r"Key,[^,\x00-\x1f\x7f]+", value):
         seq = value.split(",", 1)[1]
+        kind, note = hazard_note(label, seq)
+        if kind == "console":
+            return "", note + "; dropped"
+        if kind:
+            return value, note
         if len(seq) == 1 and seq.isalnum():
             return value, f"{label}: '{seq}' is a single letter or digit chord"
         return value, None
@@ -759,7 +1207,14 @@ def read_profile(path):
                 warnings.append(f"{key}={value!r} is not a valid chord, dropped")
                 sections["Conf"][key] = ""
             else:
-                sections["Conf"][key] = cleaned
+                kind, note = hazard_note(key, cleaned)
+                if kind == "console":
+                    warnings.append(note + "; dropped")
+                    sections["Conf"][key] = ""
+                    continue
+                if kind:
+                    warnings.append(note)
+                sections["Conf"][key] = conf_chord(cleaned)
             continue
         cleaned = value.replace(",", ".")
         if not NUM_RE.fullmatch(cleaned):
@@ -792,6 +1247,15 @@ def read_profile(path):
                 and not re.fullmatch(r"AxisKey,[^,\x00-\x1f\x7f]+,[^,\x00-\x1f\x7f]+,\d+", value):
             warnings.append(f"Ring mode {key}: {value!r} is invalid, dropped")
             sections["Ring"][key] = ""
+        elif value.startswith("AxisKey,"):
+            for chord_ in value.split(",")[1:3]:
+                kind, note = hazard_note(f"Ring mode {key}", chord_)
+                if kind == "console":
+                    warnings.append(note + "; the mode is dropped")
+                    sections["Ring"][key] = ""
+                    break
+                if kind:
+                    warnings.append(note)
 
     curve, warn = _validate_curve(sections["Pressure"]["TabletToolPressureCurve"])
     if warn:
@@ -821,10 +1285,9 @@ def _raw_conf_values():
         lines = []
     values = {k: "" for k in CONF_KEYS}
     for line in lines:
-        key, sep, val = line.partition("=")
-        key = key.strip()
-        if sep == "=" and key in values:
-            values[key] = val.split("#", 1)[0].strip()
+        kv = parse_conf_line(line)
+        if kv and kv[0] in values:
+            values[kv[0]] = kv[1]
     return values
 
 
@@ -873,21 +1336,27 @@ def ensure_first_start(pad, pen, sysname=None):
     pending = not ((OLD_DATA / MOVED_NOTE).exists() or (DATA / MOVE_MARK).exists()) and bool(_move_pairs(OLD_DATA, DATA))
     live = _live_sections(pad, pen, sysname)
     write_profile(profile_path("My settings"), live)
-    cp = _read_ini()
-    cp.add_section("Active")
-    cp.set("Active", "name", "My settings")
-    cp.add_section("Grid")
-    for n in range(1, 10):
-        cp.set("Grid", str(n), "My settings" if n == 1 else "")
-    cp.add_section("Device")
-    if pad:
-        cp.set("Device", "pad", pad)
-    if pen:
-        cp.set("Device", "pen", pen)
-    if pending:
-        cp.add_section("Move")
-        cp.set("Move", "fallback", "1")
-    _write_ini(cp)
+
+    def change(cp):
+        if PROFILES_INI.exists():
+            return                              # another start was first
+        cp.add_section("Active")
+        cp.set("Active", "name", "My settings")
+        cp.add_section("Grid")
+        for n in range(1, 10):
+            cp.set("Grid", str(n), "My settings" if n == 1 else "")
+        cp.add_section("Device")
+        if pad:
+            cp.set("Device", "pad", pad)
+        if pen:
+            cp.set("Device", "pen", pen)
+        if pending:
+            cp.add_section("Move")
+            cp.set("Move", "fallback", "1")
+    try:
+        update_ini(change)
+    except TimeoutError:
+        pass                                    # the next start tries again
 
 
 # ── chunk: _move_pairs
@@ -1073,11 +1542,14 @@ def checkpoint(pad, pen, sysname=None, status=None):
 
 
 # ── chunk: switch_to
-def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=None):
+def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=None, wait_ready=None):
     """Switch the live settings to profile `name`. checkpoint_=False only for
     Replace and Apply (step 6's import clash), which already wrote the
     target profile itself. Raises SwitchStopped when a step fails - nothing
-    after that step ran. Returns the read_profile warnings."""
+    after that step ran. Returns the read_profile warnings. wait_ready, when
+    given, is called (it may block) right before the first live write of the
+    pad rebinds and again before the second round: the per-app follower holds
+    it until no key is down."""
     def note(msg):
         if status:
             status(msg)
@@ -1091,6 +1563,8 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
     for w in warnings:
         note(w)
 
+    if wait_ready:
+        wait_ready()
     if pad:
         for i in range(8):
             if target["Pad"][str(i)] == "Disabled":
@@ -1110,7 +1584,7 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
                 lines = []
             first_owned, kept = None, []
             for line in lines:
-                key = line.split("=", 1)[0].strip()
+                key = (parse_conf_line(line) or (None,))[0]
                 if key in CONF_KEYS:
                     if first_owned is None:
                         first_owned = len(kept)
@@ -1127,6 +1601,8 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
         note(DAEMON_DOWN)
     time.sleep(0.3)
 
+    if wait_ready:
+        wait_ready()
     if pad:
         for i in range(8):
             want = target["Pad"][str(i)]

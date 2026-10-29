@@ -78,13 +78,37 @@ sed -i 's/^SCALE=.*/SCALE=0.80/' "$S/conf/tabprec.conf"
 check "3d resize clamped to the screen: 0 0 2048 1353" 'grep -qx "0 0 2048 1353 0.10" "$FAKE_LOG"'
 check "3d area file rewritten with fractions" '[ "$(cat "$RD/area")" = "0 0 2048 1353 0.10 2560 1440 0.000000 0.000000 0.800000 0.939583" ] && [ "$(sets)" -eq 7 ]'
 
+# U: UNU-03 - the screen changes while the mode is ON. KWin applies the FRACTIONS; the pixels (area file,
+#    overlay, the next drag) must follow the live screen. State here: ON, area 0 0 2048 1353 on 2560x1440.
+sed -i 's/^SCALE=.*/SCALE=0.50/' "$S/conf/tabprec.conf"
+FAKE_PEN="1000 500 1920 1080" "$T" resize; sleep 0.4
+check "U1 screen now 1920x1080, SCALE 0.50: area redone for it (288 191 960 634, screen fields 1920 1080)" \
+    '[ "$(cut -d" " -f1-7 "$RD/area")" = "288 191 960 634 0.10 1920 1080" ]'
+FAKE_PEN="1000 500 1600 900" "$T" resize; sleep 0.4
+check "U2 screen now 1600x900, SCALE unchanged: the area file still follows (screen fields 1600 900, width 800)" \
+    '[ "$(cut -d" " -f6-7 "$RD/area")" = "1600 900" ] && [ "$(cut -d" " -f3 "$RD/area")" = "800" ]'
+check "U2 ... and the overlay got the new pixels through the pipe" 'tail -1 "$FAKE_LOG" | grep -q " 800 [0-9]* 0.10$"'
+"$T" suspend; sleep 0.3
+FAKE_PEN="1000 500 1920 1080" "$T" resume; sleep 0.4
+check "U3 resume after the screen grew to 1920x1080: the area file follows (1920 1080, width 960)" \
+    '[ "$(cut -d" " -f6-7 "$RD/area")" = "1920 1080" ] && [ "$(cut -d" " -f3 "$RD/area")" = "960" ]'
+s4=$(sets); FAKE_PEN="1000 500 1920 1080" "$T" resize; sleep 0.3
+check "U4 screen unchanged and SCALE matches: a resize does nothing (no new mapping call)" '[ "$(sets)" -eq "$s4" ]'
+sed -i 's/^SCALE=.*/SCALE = 0.60   # spaced and commented (GCP)/' "$S/conf/tabprec.conf"
+FAKE_PEN="1000 500 1920 1080" "$T" resize; sleep 0.3
+check "U5 the toggle itself reads 'SCALE = 0.60 # note': width 1152 on 1920 (the old shell sourced it and read the default)" \
+    '[ "$(cut -d" " -f3 "$RD/area")" = "1152" ]'
+sed -i 's/^SCALE.*/SCALE=0.80/' "$S/conf/tabprec.conf"
+FAKE_PEN="1000 500 2560 1440" "$T" resize; sleep 0.3          # a state the next section can start from
+U_EXTRA=$(( $(sets) - 7 ))                                      # mapping calls section U added
+
 # 4: STALE marker (10 s old) + press -> OFF, not move.
 touch -d '10 seconds ago' "$RD/relocate"
 "$T" toggle; sleep 0.4
 check "4 off: state, area, marker gone" '[ ! -f "$RD/saved-area" ] && [ ! -f "$RD/area" ] && [ ! -f "$RD/relocate" ]'
-check "4 base mapping restored"         '[ "$(tail -1 "$STUB_LOG")" = "$SET 0 0 1 1" ] && [ "$(sets)" -eq 8 ]'
+check "4 base mapping restored"         '[ "$(tail -1 "$STUB_LOG")" = "$SET 0 0 1 1" ] && [ "$(sets)" -eq $((8 + U_EXTRA)) ]'
 "$T" suspend; "$T" resume; "$T" resize; sleep 0.3
-check "4 suspend/resume/resize are no-ops when off" '[ "$(sets)" -eq 8 ]'
+check "4 suspend/resume/resize are no-ops when off" '[ "$(sets)" -eq $((8 + U_EXTRA)) ]'
 check "4 overlay killed"                '[ ! -d "/proc/$PID1" ]'
 check "4 pid file removed"              '[ ! -f "$RD/overlay.pid" ]'
 

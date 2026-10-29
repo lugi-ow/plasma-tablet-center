@@ -14,10 +14,10 @@ import sys
 
 FILES = ("tablet-precision.sh", "tablet-pen-pos.py", "tablet-overlay.py", "tablet-overlay.qml",
          "tablet-hover.py", "tablet-precision-size.sh", "tablet-size-preview.py",
-         "tablet-pointer-warp.py", "tablet-pad-probe.py", "tablet_center.py", "tablet_profiles.py")
+         "tablet-pointer-warp.py", "tablet-pad-probe.py", "tablet-pen-driver.py", "tablet-appfocus.py", "tablet_center.py", "tablet_profiles.py")
 # file -> [(line prefix that anchors the block, chunk name)]
 BLOCKS = {
-    "tablet-precision.sh": [("export LC_ALL=C.UTF-8", "config-and-paths"), ('[ "$MODE" = heal ] && find_pen', "run-lock")],
+    "tablet-precision.sh": [("export LC_ALL=C.UTF-8", "config-and-paths"), ('case "$MODE" in heal|grabbed) find_pen;; esac', "run-lock")],
     "tablet-overlay.py": [("USAGE = ", "args"), ("app = QGuiApplication", "window"),
                           ("if follow or fifo:", "input-source"), ("    def on_input", "on_input")],
     "tablet-overlay.qml": [("Window {", "overlay-window"), ("    Item {", "fading-item"),

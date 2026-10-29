@@ -18,6 +18,10 @@ if [ "$2" = call ]; then                     # kglobalaccel, for the package_set
     esac
     exit 0
 fi
+# $STUB_STALE = an event node the pen has LEFT (a bus switch renumbered it): a write there exits 1 and the node
+# says tabletTool false, like KWin once the device is gone
+[ "$2" = set-property ] && [ -n "${STUB_STALE:-}" ] && case "$4" in */"$STUB_STALE") exit 1;; esac
+[ "$2" = set-property ] && [ -n "${STUB_SET_FAIL:-}" ] && exit 1   # every live write refused (B3-1: the warning path)
 PRODUCT=${STUB_PRODUCT:-864}
 KEPT="${STUB_AREAS:+$STUB_AREAS/area-$PRODUCT}"
 if [ "$2" = "set-property" ] && [ "$6" = outputArea ] && [ -n "$KEPT" ]; then
@@ -29,7 +33,8 @@ elif [ "$2" = "get-property" ]; then
         case "$prop" in
             devicesSysNames) [ -n "${STUB_NO_PEN:-}" ] && echo 'as 0' || echo 'as 1 "event5"' ;;
             name)            [ -n "${STUB_NO_PEN:-}" ] && echo 's "Virtual mouse"' || echo 's "Wacom Intuos Pro M Pen"' ;;
-            tabletTool)      [ -n "${STUB_NO_PEN:-}" ] && echo 'b false' || echo 'b true' ;;
+            tabletTool)      if [ -n "${STUB_NO_PEN:-}" ]; then echo 'b false'
+                             else case "$4" in */"${STUB_STALE:-@}") echo 'b false';; *) echo 'b true';; esac; fi ;;
             tabletPad)       echo 'b false' ;;
             size)            echo '(dd) 224 148' ;;
             leftHanded)      [ -n "${STUB_LEFT:-}" ] && echo "b $STUB_LEFT" ;;   # silent unless a rig sets it

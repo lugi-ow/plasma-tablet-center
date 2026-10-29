@@ -71,8 +71,26 @@ resolves a chord's letter through the *currently active* keyboard layout
 (`keycodeFromKeysym` searches only that layout). With a Cyrillic layout
 active there is no key producing a Latin `p`, so `Meta+Shift+P` sends
 nothing - silently, except for a `kwin_buttonrebinds` line in the journal.
-F-keys and bare modifiers exist in every layout. Bind pads and rings to
-F-key chords only.
+F-keys and bare modifiers exist in every layout. Bind the plain Press boxes,
+the pen buttons and the rings to F-key chords only.
+
+**What the helper can press.** The pie chords (a press chord, a touch chord)
+are pressed by the toolkit's own helper, on a small virtual keyboard it keeps.
+Any typed key works: letters, digits, punctuation, Space, Tab, Return, Esc,
+Backspace, Del, Ins, Home, End, PgUp, PgDown, the arrows, the lock keys, Menu,
+Pause, plus the modifiers and F1-F24. The helper presses the PHYSICAL key at
+its US-keyboard position, so with a Cyrillic layout active, a letter key
+reaches the program as the Cyrillic letter, as from your own keyboard. Qt and
+KDE programs still run their Latin shortcuts (checked with Kate on a Russian
+layout); other programs may not. F-keys and modifiers never change with the
+layout. Print and the power keys are left out on purpose: the kernel's magic
+SysRq handler listens on every device that has Left Alt, so a virtual keyboard
+that could press Print would be a reboot key.
+
+**A chord in the settings file is letters and digits only.** The shell scripts
+source `tabprec.conf`, so a chord such as `Ctrl+'` would break them. The file
+holds a punctuation key as its Qt word (`Ctrl+[` becomes `Ctrl+BracketLeft`)
+and a shifted symbol as Shift plus its base key.
 
 **Command shortcuts need three things.** A `.desktop` file that the shortcut
 daemon will execute must carry `X-KDE-GlobalAccel-CommandShortcut=true`, must

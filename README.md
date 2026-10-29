@@ -71,8 +71,8 @@ If you used the install script before, run `./uninstall.sh` in its folder
 first. Your settings and your profiles stay.
 
 A finished package is on the Releases page of this repository. Download
-`plasma-tablet-center_1.0.0_all.deb`, then run
-`sudo apt install ./plasma-tablet-center_1.0.0_all.deb` in the folder with
+`plasma-tablet-center_2.0.0_all.deb`, then run
+`sudo apt install ./plasma-tablet-center_2.0.0_all.deb` in the folder with
 the file, and go on with step 3. A package from before the rename replaces
 itself, and your profiles are copied at the first start.
 
@@ -161,7 +161,8 @@ The shortcuts and the pad helper work at once. You do not have to log out.
 
    Your settings and your profiles stay.
 
-3. Restart the pad helper, so it runs the new code:
+3. The package restarts the pad helper for you, so it runs the new code. After
+   the install script, restart it yourself:
 
    ```
    systemctl --user restart 'app-tablet\x2dhover@autostart.service'
@@ -203,8 +204,13 @@ direction. The Pad buttons tab shows the whole pad as a table: each key's
 Touch and Press shortcuts, the ring's four modes, the pie keys and the
 precision key. Hover over a column title for its explanation.
 
-Bind pad keys to F-keys and modifiers. Letters and digits do not work while
-a non-Latin keyboard layout is active.
+In a key's Press or Touch box, once its pie tick is set, type any key with its
+modifiers: letters, digits, brackets, Space, Tab, Esc, the arrows and more.
+If the text names no key, the row shows a warning and the old key stays. Three
+kinds of key are refused on purpose: Ctrl+Alt+F1 to F12 (they switch Linux to a
+text console), Print, and the power keys. The other boxes (the plain Press
+boxes, the pen buttons, the ring) take F-keys and modifiers. Letters and
+digits do not work there while a non-Latin keyboard layout is active.
 
 ## Pen
 
@@ -221,6 +227,14 @@ Center, the pen and the pad share one window.
   that it did not set.
 - The tab works with the pen away. Click "Apply", and the settings take
   effect when the pen connects.
+- Hover over the pressure curve. The tooltip tells you where your light
+  strokes and your hardest strokes sit, for example "your light strokes peak
+  near 8 %, your hardest reach 61 %". The numbers are raw pen pressure,
+  before the curve, and they come from a record the pad helper keeps for
+  each profile: the last 10 hours that the pen was near the tablet, in a file
+  of at most 21 KB. With fewer than 20 strokes the tooltip only says how many
+  it has. To switch the record off, add the line `PRESSURE_RECORD=0` to
+  `~/.config/tabprec.conf` and log in again.
 
 ## Left-handed use
 
@@ -248,6 +262,14 @@ In the Profiles tab:
 - "Export All Current Settings as Profile..." saves your setup as a new
   profile file, to back it up or to share it.
 
+**Apps and profiles.** The box on the right of the grid, "Profile specifics",
+belongs to the profile that is active now. Press "Add app..." and pick an app
+from the list. That app then uses this profile whenever you work in it. Tick
+"Use for all other apps" to make this profile the one for every app you did
+not list. Every press is saved at once. To change the apps of another profile,
+click that profile in the grid first. A pie menu does not switch the profile.
+The switches are logged in `$XDG_RUNTIME_DIR/tabprec/appfocus.log`.
+
 A switch never turns precision mode on or off. The first time you change a
 profile in a session, Tablet Center keeps one backup of it. Your profiles
 stay after an uninstall.
@@ -261,7 +283,7 @@ reset.
 
 To open a menu from a pad key:
 
-1. In Kando's editor, give the menu a shortcut of modifiers and one F-key
+1. In Kando's editor, give the menu a shortcut of modifiers and one key
    that nothing else uses.
 2. In the Pad buttons tab, type the same shortcut in the key's Press box.
    To open the menu on a touch, use its Touch box instead.
@@ -272,6 +294,20 @@ To open a menu from a pad key:
 The toolkit then moves the mouse onto the pen and presses the shortcut, so
 the menu opens under the pen every time. On a Touch pie, lift your finger
 on a slice to select it.
+
+## Pen driver (trial, off by default)
+
+On some systems the pen can lag or jump when precision mode changes. The pen
+driver is a small helper that sits between the pen and the desktop and does
+the precision mapping itself. To try it, add the line `PEN_DRIVER=1` to
+`~/.config/tabprec.conf`, then log out and in again. To switch it off, remove
+the line and log out and in. If the pen stops working while the trial is on,
+type this in Konsole, and the pen works again at once:
+
+    systemctl --user stop tablet-pen-driver
+
+The driver has met a pen stand-in in a virtual machine. It has not yet run a
+long session with a real pen.
 
 ## Known limitations
 

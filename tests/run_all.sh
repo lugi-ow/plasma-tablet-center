@@ -1,13 +1,14 @@
 #!/bin/bash
 # tests/run_all.sh - every gate in one go: compile every Python file,
 # syntax-check every shell script, the map gate (tests/check_map.py), then the
-# six rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
+# eight rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
 # reader and a fake overlay), test_size.sh (the ring script with a stub toggle
 # and a fake preview), test_hover.py (the daemon with a named pipe as the
 # pad, a fake pen, fake overlays and a fake toggle), test_profiles.py
 # (tablet_profiles.py, Qt-free, with stubbed kreadconfig6/kwriteconfig6/qdbus6
 # wrapping the real binaries), test_install.sh (packaging/build-deb.sh's .deb
-# unpacked into a scratch root, its first start on a scratch HOME) and test_center.py (the Pad buttons tab offscreen,
+# unpacked into a scratch root, its first start on a scratch HOME), test_conf.py (one conf line shape in every
+# reader), test_warp.py (the virtual mouse when KWin's list cannot be matched) and test_center.py (the Pad buttons tab offscreen,
 # skipped without PyQt6 like the import smoke). Run from anywhere; needs python3
 # and bash - no tablet, no KWin, no window. Exit 0 = all green.
 set -o pipefail
@@ -42,10 +43,22 @@ echo "== ring rig"
 bash tests/test_size.sh "$S" "$PWD/tablet-precision-size.sh" 2>&1 | grep -E '^(FAIL|failures)' || red=1
 echo "== hover rig"
 python3 tests/test_hover.py "$S" "$PWD/tablet-hover.py" 2>/dev/null | grep -E '^(FAIL|failures)' || red=1
+echo "== pressure rig"
+python3 tests/test_pressure.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures|cpu)' || red=1
 echo "== profiles rig"
 python3 tests/test_profiles.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== pen driver rig"
+python3 tests/test_pen_driver.py 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== pen wait rig"
+bash tests/test_pen_wait.sh "$S" "$PWD/tablet-precision.sh" 2>&1 | grep -E '^(FAIL|SKIP|failures)' || red=1
 echo "== transition rig"
 python3 tests/test_transition.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== conf rig"
+python3 tests/test_conf.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== warp rig"
+python3 tests/test_warp.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== per-app rig"
+python3 tests/test_perapp.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
 echo "== install rig"
 bash tests/test_install.sh "$S" 2>&1 | grep -E '^(FAIL|failures)' || red=1
 echo "== center rig"

@@ -2,6 +2,7 @@
 # tablet-size-preview.py - the centred, fading preview of the precision area size (a ring tick with precision mode off).
 # Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -49,15 +50,21 @@ def read_conf():
     scale, dim, lo, hi = 0.36, 0.10, 0.05, 0.80
     try:
         for line in CONF.read_text().splitlines():
-            key, _, val = line.partition("=")
+            m = re.fullmatch(r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)", line.split("#", 1)[0])   # THE conf line shape (PROJECT_MAP)
+            if not m:
+                continue
+            key, val = m.group(1), m.group(2).strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                val = val[1:-1]
+            val = val.replace(",", ".")                   # a comma decimal reads as a dot, like the toggle
             try:
-                if key.strip() == "SCALE":
+                if key == "SCALE":
                     scale = float(val)
-                elif key.strip() == "SCALE_MIN":
+                elif key == "SCALE_MIN":
                     lo = float(val)
-                elif key.strip() == "SCALE_MAX":
+                elif key == "SCALE_MAX":
                     hi = float(val)
-                elif key.strip() == "DIM":
+                elif key == "DIM":
                     dim = max(0.0, min(1.0, float(val)))
             except ValueError:
                 pass

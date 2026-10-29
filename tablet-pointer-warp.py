@@ -4,6 +4,7 @@
 import ctypes as C
 import fcntl
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -45,36 +46,83 @@ ABS_X, ABS_Y, BTN_LEFT, BUS_VIRTUAL = 0, 1, 0x110, 6
 ABS_RANGE = 65536               # libinput: px = value * screen / (max - min + 1)
 
 # ── chunk: chord-keys
-# The chord alphabet: kcminputrc's key names -> kernel key codes, for the
-# modifiers and F1..F24 only (the project rule: letters resolve through the
-# ACTIVE layout, F-keys and modifiers do not - and ONLY these codes may go
-# on the device: other button classes flip libinput's classification).
+# The chord alphabet: kcminputrc / QKeySequence key names -> kernel key codes
+# at US positions (the helper presses PHYSICAL keys: under ru an app gets the
+# key's Cyrillic letter, as from his keyboard). Modifiers, F1..F24, the
+# letters, digits, punctuation and the editing / arrow / lock keys. NEVER
+# registered: KEY_SYSRQ (Print) and the power keys - the kernel's magic-SysRq
+# handler listens on any device that has KEY_LEFTALT, and the device's key set
+# is the boundary (an unregistered code is dropped by the input core). No BTN_*
+# code either: those flip the pointer / tablet / joystick class. KEY_* codes
+# below 0x100 change no class beyond "keyboard", which the modifiers already set.
 # CHORD_KEYS = every code, the set the daemon registers at create time.
 KEYCODES = {"meta": 125, "super": 125, "win": 125, "ctrl": 29, "control": 29,
             "alt": 56, "shift": 42,
             **{f"f{n}": 58 + n for n in range(1, 11)},        # F1..F10 = 59..68
             "f11": 87, "f12": 88,
             **{f"f{n}": 170 + n for n in range(13, 25)}}      # F13..F24 = 183..194
+TYPED_KEYS = {
+    **{c: 2 + i for i, c in enumerate("1234567890")},                # 1..9, 0 = 2..11
+    **{c: 16 + i for i, c in enumerate("qwertyuiop")},               # 16..25
+    **{c: 30 + i for i, c in enumerate("asdfghjkl")},                # 30..38
+    **{c: 44 + i for i, c in enumerate("zxcvbnm")},                  # 44..50
+    "-": 12, "=": 13, "[": 26, "]": 27, ";": 39, "'": 40, "`": 41, "\\": 43,
+    ",": 51, ".": 52, "/": 53,
+    "esc": 1, "escape": 1, "backspace": 14, "tab": 15, "return": 28, "enter": 96,   # Enter = the keypad's
+    "space": 57, "capslock": 58, "numlock": 69, "scrolllock": 70, "pause": 119, "menu": 139,
+    "home": 102, "up": 103, "pgup": 104, "pageup": 104, "left": 105, "right": 106,
+    "end": 107, "down": 108, "pgdown": 109, "pagedown": 109,
+    "ins": 110, "insert": 110, "del": 111, "delete": 111}
+SHIFT_OF = dict(zip("!@#$%^&*()_+{}|:\"~<>?", "1234567890-=[]\\;'`,./"))   # a shifted symbol -> its base key
+SHIFTED = {c: TYPED_KEYS[base] for c, base in SHIFT_OF.items()}
+# tabprec.conf is SOURCED by the toggle script, so a chord goes into it as letters, digits and '+' only
+# (tablet_profiles._line_ok): a punctuation key is written as its Qt word, read back through the same table
+CONF_WORDS = {"-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight", ";": "Semicolon",
+              "'": "Apostrophe", "`": "QuoteLeft", "\\": "Backslash", ",": "Comma", ".": "Period", "/": "Slash"}
+TYPED_KEYS.update({word.lower(): TYPED_KEYS[sym] for sym, word in CONF_WORDS.items()})
 MODIFIER_ORDER = (42, 29, 56, 125)   # Shift, Ctrl, Alt, Meta: KWin's own emission order
 MODIFIER_CODES = frozenset(MODIFIER_ORDER)
-CHORD_KEYS = tuple(sorted(set(KEYCODES.values())))
+CHORD_KEYS = tuple(sorted(set(KEYCODES.values()) | set(TYPED_KEYS.values())))
+
+
+# ── chunk: chord_parts
+def chord_parts(text):
+    """The '+'-separated names of a chord, with the '+' key itself kept
+    ('Ctrl++' -> ['Ctrl', '+']); None when a '+' trails with no key after it."""
+    parts = (text or "").split("+")
+    if len(parts) >= 2 and parts[-1] == "":
+        if parts[-2] != "":
+            return None                              # 'Ctrl+': a separator with nothing after it
+        parts = parts[:-2] + ["+"]
+    return parts
 
 
 # ── chunk: parse_chord
 def parse_chord(text, need_key=True):
     """'Meta+Shift+F8' -> [42, 125, 66]: the modifiers in KWin's own order
     (Shift, Ctrl, Alt, Meta - what buttonrebindsfilter emits), then the
-    other keys in the given order. need_key=True (a press or pie chord)
-    demands exactly ONE non-modifier key; need_key=False (a touch chord,
-    HELD while the finger rests) allows bare modifiers - except Meta
-    alone, whose synthetic press-and-release is kglobalaccel's launcher
-    tap. None outside the alphabet or on a broken shape."""
+    other keys in the given order. A name that is a typed key ('[', 'Space',
+    'q') gives its US-position code; a shifted symbol ('{') gives Shift plus
+    its base key. need_key=True (a press or pie chord) demands exactly ONE
+    non-modifier key; need_key=False (a touch chord, HELD while the finger
+    rests) allows bare modifiers - except Meta alone, whose synthetic
+    press-and-release is kglobalaccel's launcher tap. None when a name is no
+    key the device carries, or on a broken shape."""
+    parts = chord_parts(text)
+    if parts is None:
+        return None
     mods, keys = [], []
-    for part in (text or "").split("+"):
-        code = KEYCODES.get(part.strip().lower())
+    for part in parts:
+        name = part.strip().lower()
+        code = KEYCODES.get(name)
+        if code is None:
+            code = TYPED_KEYS.get(name)
+            if code is None and name in SHIFTED:
+                code = SHIFTED[name]
+                mods.append(42)
+        (mods if code in MODIFIER_CODES else keys).append(code)
         if code is None:
             return None
-        (mods if code in MODIFIER_CODES else keys).append(code)
     if need_key:
         if len(keys) != 1:
             return None
@@ -84,6 +132,29 @@ def parse_chord(text, need_key=True):
     if not need_key and ordered == [125]:
         return None                              # Meta alone = the launcher tap
     return ordered
+
+
+# ── chunk: safe_chord
+def safe_chord(text):
+    """The chord as tabprec.conf may hold it: letters, digits and '+' only. A punctuation key becomes
+    its Qt word ('Ctrl+[' -> 'Ctrl+BracketLeft'), a shifted symbol Shift plus its base key ('{' ->
+    'Shift+BracketLeft'); spaces around the names go. The names are not judged (parse_chord does
+    that); None on a trailing separator or a character that has no word."""
+    parts = chord_parts(text)
+    if parts is None:
+        return None
+    out = []
+    for part in parts:
+        name = part.strip()
+        if name.isalnum():
+            out.append(name)
+        elif name in CONF_WORDS:
+            out.append(CONF_WORDS[name])
+        elif name in SHIFT_OF:
+            out += ["Shift", CONF_WORDS.get(SHIFT_OF[name], SHIFT_OF[name])]
+        else:
+            return None
+    return "+".join(out)
 
 
 # ── chunk: chord
@@ -118,14 +189,21 @@ def screen_size():
 
 # ── chunk: kwin_sees
 def kwin_sees(event_node, timeout=1.5):
-    """Poll KWin's input device list until event_node shows up."""
+    """Poll KWin's input device list until event_node shows up, as a whole
+    word of busctl's text ("as 2 "event5" ...") or JSON (--json=short) -
+    quotes or none, so a changed quoting does not blind the probe. True =
+    listed; False = still absent at the deadline, or no busctl/bus to ask."""
     deadline = time.monotonic() + timeout
+    word = re.compile(rf"(?<![\w]){re.escape(event_node)}(?![\w])")
     while time.monotonic() < deadline:
-        out = subprocess.run(
-            ["busctl", "--user", "get-property", "org.kde.KWin",
-             "/org/kde/KWin/InputDevice", "org.kde.KWin.InputDeviceManager",
-             "devicesSysNames"], capture_output=True, text=True).stdout
-        if f'"{event_node}"' in out:
+        try:
+            out = subprocess.run(
+                ["busctl", "--user", "get-property", "org.kde.KWin",
+                 "/org/kde/KWin/InputDevice", "org.kde.KWin.InputDeviceManager",
+                 "devicesSysNames"], capture_output=True, text=True, timeout=0.5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if word.search(out):
             return True
         time.sleep(0.02)
     return False
@@ -137,14 +215,18 @@ def emit(fd, etype, code, value):
 
 
 # ── chunk: create
-def create(keys=()):
+def create(keys=(), probe=True, strict=True, note=trace):
     """The virtual absolute mouse: (fd, its event node name), returned only
     once KWin lists the node. OSError = /dev/uinput cannot be opened;
     RuntimeError = KWin never picked the device up (it is gone again then).
     The caller keeps fd for as long as it wants to warp - one run here, the
     daemon's whole life in tablet-hover.py - and ends with destroy(fd).
     keys: extra keyboard codes to register (the daemon passes CHORD_KEYS so
-    a CHORD_<n> added to the conf later needs no new device)."""
+    a CHORD_<n> added to the conf later needs no new device).
+    probe=False skips the KWin look-up (the daemon with WARP=0 needs only
+    the chords). strict=False keeps the device when KWin is not seen listing
+    it (a changed busctl output must not kill every CHORD_<n>) and says so
+    through note(); the one-shot warp stays strict."""
     fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
     try:
         fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
@@ -165,8 +247,12 @@ def create(keys=()):
         nodes = [n for n in os.listdir(f"/sys/devices/virtual/input/{sysname}")
                  if n.startswith("event")]
         trace(f"virtual device {sysname} -> {nodes}")
-        if not nodes or not kwin_sees(nodes[0]):
-            raise RuntimeError("KWin did not pick the virtual pointer up")
+        if not nodes:
+            raise RuntimeError("the virtual pointer has no event node")
+        if probe and not kwin_sees(nodes[0]):
+            if strict:
+                raise RuntimeError("KWin did not pick the virtual pointer up")
+            note(f"KWin not seen listing {nodes[0]}: warp may land late")
     except BaseException:
         destroy(fd)
         raise

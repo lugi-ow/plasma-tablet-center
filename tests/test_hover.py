@@ -81,7 +81,7 @@ class FakeWarper:                         # never the real one: it would move th
     def __init__(self):
         self.held = {}
 
-    def ensure(self):
+    def ensure(self, probe=True):
         pass
 
     def warp(self, mapped, why="press"):
@@ -167,6 +167,14 @@ def poke():
 fails = 0
 
 
+def held_state():
+    try:
+        pid, state = (RD / "tabprec" / "held").read_text().split()
+        return int(pid), int(state)
+    except (OSError, ValueError):
+        return None
+
+
 def check(name, cond):
     global fails
     print(("PASS " if cond else "FAIL ") + name)
@@ -181,6 +189,38 @@ ghost = lambda: GHOST_LOG.read_text() if GHOST_LOG.exists() else ""
 check("A0 fresh login: the daemon makes its own runtime dir and control pipe", FRESH_LOGIN_PIPE)
 check("A0 a plain file at hover.ctl is replaced by a pipe", STALE_FILE_REPLACED)
 check("A0 a conf change poked before watch opens the pipe is applied", WATCH_REREADS_CONF)
+
+# FUT-01: the daemon tells the Warper whether the warp needs KWin's device list (WARP=0 does not)
+_nodes_was = hover.tablet_nodes
+hover.tablet_nodes = lambda: []
+_asked = []
+for _w in ("1", "0"):
+    _fw = FakeWarper()
+    _fw.ensure = lambda *a: _asked.append(a[0] if a else None)
+    hover.watch({"WARP": _w}, None, _fw)
+hover.tablet_nodes = _nodes_was
+check("F0 watch asks ensure(probe): WARP=1 -> True, WARP=0 -> False", _asked == [True, False])
+
+# UNU-03: the area file's FRACTIONS are the truth; the pixels follow the live screen (the drag, the follow)
+AREA.write_text("909 475 742 490 0.10 2560 1440 0.355078 0.329861 0.289844 0.340278\n")
+_screen_was = getattr(hover, "screen_now", None)
+hover.screen_now = lambda: (1920, 1080)
+_read = getattr(hover, "read_area", None)
+check("U1 the screen shrank to 1920x1080: the pixels are redone from the fractions (682 356 557 368)",
+      _read is not None and _read() == (682, 356, 557, 368, 1920, 1080))
+hover.screen_now = lambda: (2560, 1440)
+check("U2 the screen as recorded: the recorded pixels",
+      _read is not None and _read() == (909, 475, 742, 490, 2560, 1440))
+hover.screen_now = lambda: None
+check("U3 no live size (no display): the recorded pixels stay",
+      _read is not None and _read() == (909, 475, 742, 490, 2560, 1440))
+AREA.write_text("909 475 742 490 0.10 2560 1440\n")
+hover.screen_now = lambda: (1920, 1080)
+check("U4 an old 7-field area file has no fractions: the recorded pixels stay",
+      _read is not None and _read() == (909, 475, 742, 490, 2560, 1440))
+AREA.unlink()
+if _screen_was is not None:
+    hover.screen_now = _screen_was
 
 # --- S: the node set opened: the daemon starts the toggle's heal, in the background ---
 check("S the pad node opened: heal started once", ghost().count("CALL heal") == 1)
@@ -224,8 +264,17 @@ wspec.loader.exec_module(warpmod)
 check("K parse: Meta+Shift+F8 -> Shift, Meta, F8 (KWin's modifier order)",
       warpmod.parse_chord("Meta+Shift+F8") == [42, 125, 66])
 check("K parse: case-blind, Super = Meta, the F13 block", warpmod.parse_chord("super+f13") == [125, 183])
-check("K parse: a letter or an empty chord is refused",
-      warpmod.parse_chord("Q+F1") is None and warpmod.parse_chord("") is None)
+check("K parse: any typed key is a chord key at its US position ([ -> 26, Ctrl+Q, a shifted { = Shift + [); "
+      "an empty chord, two keys, Print and a trailing + stay refused",
+      warpmod.parse_chord("[") == [26] and warpmod.parse_chord("Ctrl+Q") == [29, 16]
+      and warpmod.parse_chord("Ctrl+{") == [42, 29, 26] and warpmod.parse_chord("Ctrl++") == [42, 29, 13]
+      and warpmod.parse_chord("Q+F1") is None and warpmod.parse_chord("") is None
+      and warpmod.parse_chord("Alt+Print") is None and warpmod.parse_chord("Ctrl+") is None
+      and warpmod.safe_chord("Ctrl+[") == "Ctrl+BracketLeft" and warpmod.parse_chord("Ctrl+BracketLeft") == [29, 26]
+      and warpmod.safe_chord("Ctrl+'") == "Ctrl+Apostrophe" and warpmod.safe_chord("{") == "Shift+BracketLeft")
+check("K parse: the device never carries KEY_SYSRQ (99) or a BTN_* code, and registers every parsed key",
+      99 not in warpmod.CHORD_KEYS and all(c < 0x100 for c in warpmod.CHORD_KEYS)
+      and 26 in warpmod.CHORD_KEYS and 194 in warpmod.CHORD_KEYS)
 check("K parse: modifier-only refused for a press chord, two F-keys too",
       warpmod.parse_chord("Meta") is None and warpmod.parse_chord("Ctrl+Shift") is None
       and warpmod.parse_chord("F1+F2") is None)
@@ -246,12 +295,14 @@ time.sleep(0.05)
 check("K press: one warp first, then the chords in key order",
       EVENTS[n_ev:] == [("warp", (0.4, 0.6)), ("down", ("press", 2), "Meta+Shift+F8"),
                         ("down", ("press", 3), "Q+F1")])
+check("H held: the daemon wrote its pid and 1 while keys 2 and 3 are down", held_state() == (os.getpid(), 1))
 report(press=0x04)                         # key 2 up, key 3 still down
 time.sleep(0.05)
 check("K key 2's release lifts its chord only", EVENTS[n_ev + 3:] == [("up", ("press", 2))])
 report(press=0)
 time.sleep(0.05)
 check("K key 3's release lifts the rest", EVENTS[n_ev + 4:] == [("up", ("press", 3))])
+check("H held: ...and 0 once every key is up", held_state() == (os.getpid(), 0))
 CONF.write_text("SCALE=0.29\nDIM=0.10\nHOVER_MASK=0x80\nHOLD=0.6\nLONG=1.0\nWARP=0\nCHORD_2=Meta+Shift+F8\n")
 poke()
 n_ev = len(EVENTS)

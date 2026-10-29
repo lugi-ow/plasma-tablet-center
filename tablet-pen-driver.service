@@ -1,0 +1,20 @@
+# TRIAL user unit for tablet-pen-driver.py. Install: copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now tablet-pen-driver
+# (the .deb enables it for every user: it starts at login and does nothing without PEN_DRIVER=1 in tabprec.conf)
+# THE RESCUE LINE (a dead or odd pen): systemctl --user stop tablet-pen-driver
+# Stopping the unit ends the process; the kernel then releases the grab and the real pen works again.
+[Unit]
+Description=Pen driver trial (grab the pen, re-emit it through a uinput copy)
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=2
+Restart=on-failure
+RestartSec=1
+# Switch OFF (no PEN_DRIVER=1 line in tabprec.conf, read in THE conf line shape by the helper's --check): systemd skips the start, no restart loop.
+ExecCondition=%h/.local/bin/tablet-pen-driver.py --check
+ExecStart=%h/.local/bin/tablet-pen-driver.py
+
+[Install]
+WantedBy=default.target

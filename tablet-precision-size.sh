@@ -6,15 +6,30 @@ export LC_ALL=C.UTF-8
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/tabprec.conf"
 RD="${XDG_RUNTIME_DIR:-/tmp}/tabprec"
 mkdir -p "$RD"
+# ── chunk: read_conf_keys
+read_conf_keys() {   # THE conf line shape (PROJECT_MAP): KEY [sp] = [sp] VALUE, # starts a comment, one pair of quotes dropped. The file is READ, never run
+    local line key val
+    unset PEN_DRIVER DRIVER_WAIT   # the switch comes from the conf only: an exported PEN_DRIVER=1 must not turn the trial on
+    [ -f "$CONF" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%%#*}
+        [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+        key=${BASH_REMATCH[1]} val=${BASH_REMATCH[2]}
+        val=${val#"${val%%[![:space:]]*}"}; val=${val%"${val##*[![:space:]]}"}
+        case "$val" in \"*\"|\'*\') val=${val:1:${#val}-2};; esac
+        case "$key" in SCALE|DIM|SCALE_MIN|SCALE_MAX|RECONNECT|RING_STEP|PEN_DRIVER|DRIVER_WAIT) printf -v "$key" '%s' "$val";; esac
+    done < "$CONF"
+}
+
 # ── chunk: tick-lock
 # One tick at a time over the conf. Its OWN lock, never the toggle's $RD/lock, because this script
 # CALLS the toggle. The conf is read AFTER it, so a tick queued behind another steps the newest
 # SCALE, and the read-modify-write below cannot interleave with another tick - two overlapping ticks
 # used to lose a step, and could leave a conf holding only SCALE and DIM.
 exec 8>"$RD/conf.lock"; flock -w 5 8 || exit 0   # exit 0: a tick that cannot get in must not spawn a preview either
-[ -f "$CONF" ] && . "$CONF"
-SCALE=${SCALE:-0.36}
-DIM=${DIM:-0.10}
+read_conf_keys
+SCALE=${SCALE:-0.36}; SCALE=${SCALE/,/.}; case "$SCALE" in *[!0-9.]*|*.*.*|.) SCALE=0.36;; esac   # the toggle's rule: a comma reads as a dot, junk = the default
+DIM=${DIM:-0.10}; DIM=${DIM/,/.}; case "$DIM" in *[!0-9.]*|*.*.*|.) DIM=0.10;; esac
 DIR=$(cd "$(dirname "$0")" && pwd)
 MARK="$RD/relocate"
 
@@ -35,7 +50,7 @@ SCALE=$(awk -v s="$SCALE" -v d="$STEP" -v lo="$SCALE_MIN" -v hi="$SCALE_MAX" 'BE
     printf "%.4f", s}')
 # ── chunk: conf-write
 # rewrite SCALE/DIM in place and keep every other line (touch-preview keys)
-REST=$(grep -v -E '^[[:space:]]*(SCALE|DIM)=' "$CONF" 2>/dev/null)
+REST=$(grep -v -E '^[[:space:]]*(SCALE|DIM)[[:space:]]*=' "$CONF" 2>/dev/null)
 TMP="$CONF.tmp.$$"
 { printf 'SCALE=%s\nDIM=%s\n' "$SCALE" "$DIM" && { [ -z "$REST" ] || printf '%s\n' "$REST"; }; } > "$TMP" &&
     mv -f "$TMP" "$CONF" || rm -f "$TMP"   # atomic: no crash and no full disk can leave half a conf. The group's status

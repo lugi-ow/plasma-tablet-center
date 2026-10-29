@@ -13,8 +13,11 @@ check "build: the build tree is gone" '[ -z "$(ls "$S" | grep -v -e out -e root 
 dpkg-deb -x "$DEB" "$S/root"
 dpkg-deb -e "$DEB" "$S/ctl"
 L=$S/root/usr/lib/plasma-tablet-center
-check "files: 34 entries, owned by root" '[ "$(dpkg-deb -c "$DEB" | wc -l)" = 34 ] && [ -z "$(dpkg-deb -c "$DEB" | grep -v " root/root ")" ]'
-check "files: 11 scripts, no __pycache__" '[ "$(ls "$L" | wc -l)" = 11 ] && ! dpkg-deb -c "$DEB" | grep -q pycache'
+check "files: 45 entries, owned by root" '[ "$(dpkg-deb -c "$DEB" | wc -l)" = 45 ] && [ -z "$(dpkg-deb -c "$DEB" | grep -v " root/root ")" ]'
+check "files: 13 scripts, no __pycache__" '[ "$(ls "$L" | wc -l)" = 13 ] && ! dpkg-deb -c "$DEB" | grep -q pycache'
+U=$S/root/usr/lib/systemd/user
+check "files: the pen driver unit points at the packaged helper (start and --check) and is enabled for every user" 'grep -qx "ExecStart=/usr/lib/plasma-tablet-center/tablet-pen-driver.py" "$U/tablet-pen-driver.service" && grep -qx "ExecCondition=/usr/lib/plasma-tablet-center/tablet-pen-driver.py --check" "$U/tablet-pen-driver.service" && [ "$(readlink "$U/default.target.wants/tablet-pen-driver.service")" = ../tablet-pen-driver.service ] && [ -x "$L/tablet-pen-driver.py" ]'
+check "files: lintian is told why the focus follower's autostart file is not a conffile" 'grep -q "tablet-appfocus.desktop" "$S/root/usr/share/lintian/overrides/plasma-tablet-center"'
 check "files: md5sums match" '(cd "$S/root" && md5sum --quiet -c "$S/ctl/md5sums")'
 check "files: Python shebang /usr/bin/python3" '[ "$(head -1 "$L/tablet_center.py")" = "#!/usr/bin/python3" ] && ! grep -l "^#!/usr/bin/env" "$L"/* >/dev/null'
 check "files: every Exec names a packaged file" \
@@ -25,9 +28,11 @@ check "app id: setDesktopFileName equals the menu entry's name and the AppStream
     'ID=$(sed -n "s/.*setDesktopFileName(\"\([^\"]*\)\").*/\1/p" "$L/tablet_center.py" | head -1); [ -n "$ID" ] && [ -f "$S/root/usr/share/applications/$ID.desktop" ] &&
      grep -q "<launchable type=\"desktop-id\">$ID.desktop</launchable>" "$S"/root/usr/share/metainfo/*.xml'
 check "control: it replaces the old package in one apt install" 'grep -qx "Conflicts: plasma-wacom-center" "$S/ctl/control" && grep -qx "Replaces: plasma-wacom-center" "$S/ctl/control"'  # keep-old-name
-check "control: the autostart entry is a conffile" 'grep -qx /etc/xdg/autostart/tablet-hover.desktop "$S/ctl/conffiles"'
+check "control: prerm stops each user's helper (pkill as the fallback) and is valid sh" 'sh -n "$S/ctl/prerm" && grep -q "systemctl --user -M \"\$u@\" stop tablet-pen-driver" "$S/ctl/prerm" && grep -q "pkill -TERM.*tablet-pen-driver.py" "$S/ctl/prerm"'
+check "control: postinst restarts each user's pen driver, try-restarts the pad helper (only a running one), starts the focus follower again, before its exit 0" 'grep -q "systemctl --user -M \"\$u@\" restart tablet-pen-driver" "$S/ctl/postinst" && grep -q "try-restart .app-tablet.x2dhover@autostart.service" "$S/ctl/postinst" && grep -q "start .app-tablet.x2dappfocus@autostart.service" "$S/ctl/postinst" && ! grep -q "try-restart tablet-pen-driver\|SIGUSR1" "$S/ctl/postinst" "$S/ctl/prerm" && [ "$(tail -1 "$S/ctl/postinst")" = "exit 0" ] && [ "$(grep -c "^exit 0" "$S/ctl/postinst")" = 1 ]'
+check "control: the pad helper's autostart entry is the one conffile (the focus follower's is a plain file, so a downgrade removes it)" '[ "$(cat "$S/ctl/conffiles")" = /etc/xdg/autostart/tablet-hover.desktop ]'
+check "control: prerm ends the tablet-appfocus.py process and is valid sh" 'sh -n "$S/ctl/prerm" && grep -q "pkill -TERM.*tablet-appfocus.py" "$S/ctl/prerm"'
 check "control: postinst + postrm reload udev" 'grep -q "udevadm control --reload" "$S/ctl/postinst" && grep -q "udevadm trigger" "$S/ctl/postrm" && sh -n "$S/ctl/postinst"'
-check "control: postinst try-restarts the running pad helper (not a plain restart)" 'grep -q "try-restart .app-tablet" "$S/ctl/postinst" && ! grep -q " restart .app-tablet" "$S/ctl/postinst"'
 
 # The unpacked copy, its first start as if it sat in /usr/lib: TOGGLE beside it, the shortcuts, the helper.
 # A worktree checks the stubs out without the x bit: PATH would then fall through to the real busctl and
@@ -45,7 +50,7 @@ print(wp.PKG_DIR)
 print(wp.HOVER_UNIT)
 wp.PKG_DIR = Path('$L')
 print(wp.package_setup()[0])" 2>&1)
-AUTO=$(basename "$S"/root/etc/xdg/autostart/*.desktop .desktop)
+AUTO=tablet-hover   # the pad helper's autostart file; the focus follower has its own
 check "first start: TOGGLE is the packaged toggle" '[ "$(echo "$OUT" | sed -n 1p)" = "$L/tablet-precision.sh" ]'
 check "first start: PKG_DIR is the folder the .deb ships" '[ -f "$S/root$(echo "$OUT" | sed -n 2p)/tablet_profiles.py" ]'
 check "first start: HOVER_UNIT is systemd's name for the packaged autostart file" \

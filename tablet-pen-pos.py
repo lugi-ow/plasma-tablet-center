@@ -223,6 +223,9 @@ def main(argv=None):
     if not scr:
         sys.exit(1)
     sw, sh = scr[0], scr[1]
+    if "--screen" in argv:
+        print(f"{sw} {sh}")                              # the screen size now (UNU-03): no pen read
+        return
 
     pos = evdev_pen_norm()
     source = "evdev"

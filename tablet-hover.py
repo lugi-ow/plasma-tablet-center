@@ -2,24 +2,34 @@
 # tablet-hover.py [--simulate] - the ExpressKey daemon: touch preview (ghost), area drag, pad chords, mouse warp.
 # Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import fcntl
+import configparser
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import select
+import signal
 import stat
 import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tabprec.conf"
 RD = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "tabprec"
+DEVICES = Path("/proc/bus/input/devices")   # the kernel's device list (pen_copy_node; a rig points it at a fake)
 STATE = RD / "saved-area"           # exists while precision mode is ON
 AREA = RD / "area"                  # "X Y W H DIM SW SH FX FY FW FH" of the mapping precision mode has on (the toggle writes it)
 FIFO = RD / "overlay.fifo"          # the live overlay's geometry pipe (tablet-overlay.py --fifo)
 MARK = RD / "relocate"              # kept fresh while the overlay follows the pen: the toggle moves (< 3 s old) instead of switching off
 CTL = RD / "hover.ctl"              # a line here = re-read the conf (Tablet Center pokes it on Apply)
+PROFILES_INI = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "tablet-center" / "profiles.ini"
+HELD = RD / "held"                  # '<pid> <0|1>': 1 while a pad key, touch chord or pie is held (the per-app follower waits on it)
+HELD_LAST = [None]                  # the state HELD was last written with
+PRESSURE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "tabprec" / "pressure"   # a subfolder: the pen ledgers beside it never see these files
 CTL_FD = None                       # its open end (open_ctl): held for the helper's whole life
 KCMINPUTRC = CONF.with_name("kcminputrc")   # KWin writes the pen's Left-handed mode here: turn_poll watches its stamp
 DIR = Path(__file__).resolve().parent
@@ -62,13 +72,32 @@ def log(msg):
     print(f"tablet-hover: {msg}", file=sys.stderr, flush=True)
 
 
+# ── chunk: publish_held
+def publish_held(held, force=False):
+    """Write HELD when the state changed (or force). Atomic: a reader never sees half a line."""
+    if held == HELD_LAST[0] and not force:
+        return
+    HELD_LAST[0] = held
+    tmp = HELD.with_name("held.tmp")
+    try:
+        tmp.write_text(f"{os.getpid()} {int(held)}\n")
+        os.replace(tmp, HELD)
+    except OSError:
+        pass                                     # no runtime dir: the follower treats a missing file as not held
+
+
 # ── chunk: read_conf
 def read_conf():
+    """The conf as a dict, in THE line shape (tablet_profiles.parse_conf_line; PROJECT_MAP)."""
     values = {}
     try:
         for line in CONF.read_text(errors="replace").splitlines():   # a stray byte must not end the daemon
-            key, _, val = line.partition("=")
-            values[key.strip()] = val.split("#", 1)[0].strip()
+            m = re.fullmatch(r"[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)", line.split("#", 1)[0])
+            if m:
+                val = m.group(2).strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                    val = val[1:-1]
+                values[m.group(1)] = val
     except OSError:
         pass
     return values
@@ -246,6 +275,193 @@ def pen_norm(fd):
     return (1 - pos[0], 1 - pos[1]) if TURN["on"] else pos   # libinput inverts both axes (invert_axis)
 
 
+# ── chunk: pressure_file
+def pressure_file(profile):
+    """The record file of one profile: its percent-quoted name; a name too long for a file name is cut
+    and tagged with a hash. tablet_profiles.pressure_file must give the same path."""
+    name = quote(profile, safe=" ") if profile else "(none)"
+    if len(name) > 200:
+        name = name[:150] + "-" + hashlib.sha1(profile.encode("utf-8")).hexdigest()[:10]
+    return PRESSURE_DIR / (name + ".json")
+
+
+# ── chunk: active_profile
+def active_profile():
+    """The active profile's name from profiles.ini ([Active] name), or "" when there is none or the file is unreadable."""
+    cp = configparser.RawConfigParser()
+    try:
+        cp.read(PROFILES_INI, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return ""
+    return cp.get("Active", "name", fallback="")
+
+
+# ── chunk: pen_copy_node
+def pen_copy_node():
+    """With the pen driver running (its socket in RD) the pen's events flow through the driver's virtual
+    copy and the grabbed original reads silent (its ABS / KEY state, which pen_norm and pen_axes read, still
+    updates; its event stream does not). The copy's eventNN (the pen's name, a /devices/virtual/ sysfs path),
+    else None: no driver, a stale socket, or no copy yet."""
+    if not (RD / "pen-driver.sock").exists():
+        return None
+    try:
+        blocks = DEVICES.read_text(encoding="utf-8", errors="replace").split("\n\n")
+    except OSError:
+        return None
+    found = None
+    for block in blocks:                         # the LAST one: the copy is made after the pen it copies (a VM stand-in is virtual too)
+        if 'Name="Wacom' in block and 'Pen"' in block and "Sysfs=/devices/virtual/" in block:
+            match = re.search(r"Handlers=.*?(event\d+)", block)
+            if match:
+                found = match.group(1)
+    return found
+
+
+# ── chunk: pressure_open
+def pressure_open():
+    """(fd, ABS_PRESSURE maximum) of the node the pen's events come from - the driver's copy while the pen
+    driver runs, else the pen's own node (pen_open) - read-only, or None."""
+    node, fd = pen_copy_node(), None
+    if node:
+        try:
+            fd = os.open(f"/dev/input/{node}", os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return None                  # the copy is not readable yet: the grabbed original is silent, so try the copy again next tick
+    else:
+        fd = pen_open()
+    if fd is None:
+        return None
+    buf = bytearray(24)
+    try:
+        fcntl.ioctl(fd, 0x80184540 + PressureRecord.ABS_PRESSURE, buf)   # EVIOCGABS(ABS_PRESSURE)
+        top = struct.unpack("6i", buf)[2]
+    except (OSError, struct.error):
+        top = 0
+    if top <= 0:
+        os.close(fd)
+        return None
+    return fd, top
+
+
+# ── chunk: PressureRecord
+class PressureRecord:
+    """How hard the artist draws, per profile: the raw pressure the kernel reports (before KWin's curve).
+    A stroke = BTN_TOUCH down to up with the pen tool, at least MIN_STROKE s; its peak pressure as a whole
+    percent of the node's maximum goes into a 0..100 histogram. The histograms are kept per BUCKET_S of
+    ACTIVE time (the pen in range, a gap between two reports counted as at most IDLE_CAP s), the newest
+    KEEP buckets: the last KEEP*BUCKET_S/3600 hours of drawing, so a night off does not erase the habit.
+    The file is written when something changed and FLUSH s passed, and by flush(True) at exit."""
+    ABS_PRESSURE, BTN_TOUCH, BTN_TOOL_PEN = 0x18, 0x14A, 0x140
+    BINS, BUCKET_S, KEEP, MIN_STROKE, IDLE_CAP, FLUSH = 101, 900.0, 40, 0.03, 1.0, 60.0
+    DEFINITION = ("stroke = BTN_TOUCH down..up with the pen tool, >= 0.03 s; bins[p] = strokes whose peak "
+                  "pressure was p whole percent of the maximum; one bucket per 900 s of pen-in-range time")
+
+    def __init__(self, top, profile, clock=time.monotonic):
+        self.top, self.clock = top, clock
+        self.pressure, self.touch, self.tool = 0, False, False
+        self.t_prev, self.stroke = None, None         # last report time while in range; [start, peak] of a stroke under way
+        self.dirty, self.last_write = False, None
+        self.warned = False                           # a failed write is in the journal already (one line per run of failures)
+        self.path, self.data = None, None
+        self.load(profile)
+
+    def load(self, profile):
+        """Take the profile's file as the record (a missing or damaged file starts a fresh one)."""
+        self.path = pressure_file(profile)
+        self.profile = profile
+        self.dirty, self.last_write = False, None
+        self.data = {"active_s": 0.0, "strokes": 0, "buckets": {}}
+        try:
+            old = json.loads(self.path.read_text(encoding="utf-8"))
+            buckets = {str(int(k)): [int(n) for n in v] for k, v in old["buckets"].items()}
+            if old["v"] == 1 and all(len(v) == self.BINS for v in buckets.values()):
+                self.data = {"active_s": float(old["active_s"]), "strokes": int(old["strokes"]), "buckets": buckets}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+
+    def set_profile(self, profile):
+        """The active profile changed: the old record is written, the new one loaded."""
+        if profile != self.profile:
+            self.flush(True)
+            self.load(profile)
+
+    def feed(self, raw):
+        """Whole evdev input_event structs (long sec, long usec, u16 type, u16 code, s32 value)."""
+        for sec, usec, kind, code, value in struct.iter_unpack("llHHi", raw[:len(raw) // 24 * 24]):
+            if kind == 3 and code == self.ABS_PRESSURE:
+                self.pressure = value
+            elif kind == 1 and code == self.BTN_TOUCH:
+                self.touch = value != 0
+            elif kind == 1 and code == self.BTN_TOOL_PEN:
+                self.tool = value != 0
+            elif kind == 0 and code == 0:
+                self.frame(sec + usec * 1e-6)
+            elif kind == 0 and code == 3:             # SYN_DROPPED: events were lost, so no state is known (a lost touch-up would leave a stroke open): wait for the next BTN_TOOL_PEN / BTN_TOUCH
+                self.forget()
+
+    def forget(self):
+        """No state is known (events were dropped, or the pen node went away mid-stroke): a stroke under way ends unseen."""
+        self.stroke, self.touch, self.tool, self.pressure, self.t_prev = None, False, False, 0, None
+
+    def frame(self, t):
+        """One SYN_REPORT at event time t."""
+        if self.tool:
+            if self.t_prev is not None and t > self.t_prev:
+                self.data["active_s"] += min(t - self.t_prev, self.IDLE_CAP)
+            self.t_prev = t
+        else:
+            self.t_prev = None
+        if self.touch and self.tool:
+            if self.stroke is None:
+                self.stroke = [t, 0]
+            self.stroke[1] = max(self.stroke[1], self.pressure)
+        elif self.stroke is not None:
+            start, peak = self.stroke
+            self.stroke = None
+            if t - start >= self.MIN_STROKE and peak > 0:
+                self.add(peak)
+
+    def add(self, peak):
+        """One finished stroke into the current bucket; buckets past the window go."""
+        now = int(self.data["active_s"] // self.BUCKET_S)
+        pct = min(self.BINS - 1, peak * 100 // self.top)
+        bins = self.data["buckets"].setdefault(str(now), [0] * self.BINS)
+        bins[pct] += 1
+        self.data["strokes"] += 1
+        for key in [k for k in self.data["buckets"] if int(k) <= now - self.KEEP]:
+            del self.data["buckets"][key]
+        self.dirty = True
+
+    def flush(self, force=False):
+        """Write the file when something changed and FLUSH s passed since the last write (force = at exit,
+        at a profile switch). A failed write is logged once per run of failures and tried again after FLUSH s."""
+        if not self.dirty:
+            return False
+        now = self.clock()
+        if not force and self.last_write is not None and now - self.last_write < self.FLUSH:
+            return False
+        self.last_write = now
+        doc = {"v": 1, "profile": self.profile, "definition": self.DEFINITION, "bucket_s": self.BUCKET_S,
+               "keep": self.KEEP, **self.data}
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}-{id(self):x}.tmp")   # one per helper and record: two helpers must not write one file
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(doc), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError as err:
+            try:
+                tmp.unlink()                                  # a half-written copy must not stay behind
+            except OSError:
+                pass
+            if not self.warned:
+                log(f"pressure record not written ({err}): tried again in {self.FLUSH:.0f} s")
+            self.warned = True
+            return False
+        self.warned = False
+        self.dirty = False
+        return True
+
+
 # ── chunk: toggle
 def toggle(mode, *extra):
     """Run tablet-precision.sh MODE [ARGS] (suspend / resume / toggle / pause); False when it failed."""
@@ -287,6 +503,45 @@ def heal_poll():
                                             stdout=subprocess.DEVNULL, start_new_session=True)
         except OSError as err:
             log(f"heal not started: {err}")
+
+
+# ── chunk: screen_now
+def screen_now():
+    """(sw, sh) of the screen as it is NOW (tablet-pen-pos.py --screen, beside this file), or None."""
+    try:
+        out = subprocess.run(["python3", str(DIR / "tablet-pen-pos.py"), "--screen"], capture_output=True,
+                             text=True, timeout=1).stdout.split()
+        sw, sh = int(out[0]), int(out[1])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+    return (sw, sh) if sw > 0 and sh > 0 else None
+
+
+# ── chunk: screen_moved
+def screen_moved():
+    """KWin rewrote its output config since the toggle last looked at the screen ($RD/screen-seen), or either file
+    is missing: only then is the screen asked (a process, about 25 ms on a drag start)."""
+    try:
+        koc = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kwinoutputconfig.json"
+        return koc.stat().st_mtime_ns > (RD / "screen-seen").stat().st_mtime_ns
+    except OSError:
+        return True
+
+
+# ── chunk: read_area
+def read_area():
+    """(x, y, w, h, sw, sh) of the mapping on record, ints. The FRACTIONS in the area file are the truth
+    (KWin applies them): when the screen is not the size the file recorded, the pixels are redone from
+    them for the live screen (UNU-03). An old 7-field file, or no live size, keeps the recorded pixels."""
+    f = AREA.read_text().split()
+    x, y, w, h, sw, sh = (int(v) for v in (f[0], f[1], f[2], f[3], f[5], f[6]))
+    if len(f) >= 11 and screen_moved():
+        live = screen_now()
+        if live and live != (sw, sh):
+            fx, fy, fw, fh = (float(v) for v in f[7:11])
+            sw, sh = live
+            x, y, w, h = (int(v * k + 0.5) for v, k in ((fx, sw), (fy, sh), (fw, sw), (fh, sh)))
+    return x, y, w, h, sw, sh
 
 
 # ── chunk: Follower
@@ -335,12 +590,14 @@ class Follower:
         toggle re-maps there) or a lift (snap back)."""
         if self.up or not STATE.exists():
             return
+        MARK.touch()                          # first: the toggle's rule is "a press right after the hold moves", and the screen probe below takes time
         try:
-            x, y, w, h, _dim, sw, sh = AREA.read_text().split()[:7]
-            self.geom = tuple(map(int, (w, h, sw, sh)))
+            x, y, w, h, sw, sh = read_area()
+            self.geom = (w, h, sw, sh)
             self.sink = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)   # ENXIO: no overlay reads the pipe
-        except (OSError, ValueError) as err:
+        except (OSError, ValueError, IndexError) as err:
             log(f"cannot relocate ({err}): switch precision mode off and on again")
+            MARK.unlink(missing_ok=True)
             return
         self.home = f"{x} {y} {w} {h}\n".encode()
         self._send(b"waiting\n")              # the flowing border: a preview until the press
@@ -442,14 +699,27 @@ class Warper:
             spec.loader.exec_module(self.mod)
         except Exception as err:                     # noqa: BLE001 - any import trouble = no warp, the rest runs
             log(f"no pointer warp: {err}")
+        self.hazard = None           # tablet_profiles.chord_hazard: THE rule for a console-switch chord, one copy
+        self.names = {}              # key code -> the name chord_hazard reads
+        try:
+            spec = importlib.util.spec_from_file_location("tablet_profiles", DIR / "tablet_profiles.py")
+            prof = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(prof)
+            self.hazard = prof.chord_hazard
+            for name, code in (self.mod.KEYCODES if self.mod else {}).items():
+                self.names.setdefault(code, name)
+        except Exception as err:                     # noqa: BLE001 - the guard is lost, the chords still run
+            log(f"no console-key guard: {err}")
 
-    def ensure(self):
-        """Create the virtual mouse when there is none; a failure waits RETRY s."""
+    def ensure(self, probe=True):
+        """Create the virtual mouse when there is none; a failure waits RETRY s.
+        probe = ask KWin to list the node (the warp needs it; WARP=0 does not);
+        a node KWin is not seen listing is kept anyway, with a line in the log."""
         if self.fd is not None or self.mod is None or time.monotonic() < self.next_try:
             return
         self.next_try = time.monotonic() + self.RETRY
         try:
-            self.fd, node = self.mod.create(self.mod.CHORD_KEYS)
+            self.fd, node = self.mod.create(self.mod.CHORD_KEYS, probe, False, log)
         except (OSError, RuntimeError) as err:
             log(f"pointer warp off ({err}); next try in {self.RETRY:.0f} s")
             return
@@ -477,6 +747,13 @@ class Warper:
         if codes is None:
             log(f"chord ({label}) '{text}': outside the chord rules, ignored")
             return
+        if self.hazard:
+            # the keys already down count too: a held touch chord Ctrl+Alt plus a press chord F3 is Ctrl+Alt+F3
+            union = set(codes).union(*(c for c, _ in self.held.values()))
+            if self.hazard("+".join(self.names[c] for c in union if c in self.names)) == "console":
+                log(f"chord ({label}) '{text}': refused - with the keys held it presses Ctrl+Alt+F1..F12, "
+                    "which switches to a text console")
+                return
         if self.fd is None:
             log(f"chord ({label}): no virtual device, skipped")
             return
@@ -596,7 +873,7 @@ def watch(conf, follower, warper=None):
     A line on the control pipe reloads the conf (deferred while a rectangle
     follows the pen). False = there was nothing to watch."""
     if warper is not None:
-        warper.ensure()
+        warper.ensure(conf.get("WARP", "1") != "0")
     nodes = tablet_nodes()
     ctl = open_ctl()                  # held for the helper's whole life: never closed here
     drain_ctl()                       # pokes of the absence: the read below sees their conf
@@ -625,11 +902,59 @@ def watch(conf, follower, warper=None):
     # first node under the SAME name): an open that lands in that gap fails, and the node set never
     # changes again. Such a node is tried again at every rescan.
     missed = [node for node in nodes if not attach(node)]
+    rec = pen = None                  # the pressure record and the pen's evdev fd it reads (conf PRESSURE_RECORD=0: neither exists)
+    pen_via = [None]                  # the pen driver's copy node the pen fd was opened for (None: the pen's own node)
+    ini_stamp = None                  # (mtime, size) of profiles.ini when the record's profile was last read
+
+    def pressure_sync():
+        """Follow the conf switch and the pen node: open the pen read-only and make the record, or close both.
+        One try per call; no pen node yet is tried again at the next rescan."""
+        nonlocal rec, pen, ini_stamp
+        if conf.get("PRESSURE_RECORD", "1") == "0":
+            if pen is not None:
+                os.close(pen)
+                pen = None
+            if rec is not None:
+                rec.flush(True)
+                rec = None
+                log("pressure record off")
+            return
+        if rec is not None:
+            try:
+                st = PROFILES_INI.stat()
+                stamp = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                stamp = None
+            if stamp != ini_stamp:
+                rec.set_profile(active_profile())
+            ini_stamp = stamp
+        if pen is not None and pen_via[0] != pen_copy_node():   # the pen driver came or went: its events moved
+            os.close(pen)
+            pen = None
+            rec.forget()                                      # the stroke under way was on the old node: it ends unseen
+        if pen is None:
+            pen_via[0] = pen_copy_node()
+            got = pressure_open()
+            if got is None:
+                return
+            pen = got[0]
+            if rec is None:
+                rec = PressureRecord(got[1], active_profile())
+                log(f"pressure record on: {rec.path}")
+                try:
+                    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # systemd's stop: the record is written by watch()'s finally (a record switched on by a reload needs it too)
+                except ValueError:
+                    pass                                      # not the main thread (a rig)
+            rec.top = got[1]
+        rec.flush()
+
     if not fds:
         return False
+    publish_held(False, force=True)   # a fresh file for this daemon's pid
     heal()                            # a tablet just appeared: a precision rectangle KWin kept for its pen is put right
     TURN["key"] = None                # ...and its Left-handed mode is asked again (KDE keeps it per cable and Bluetooth)
     turn_poll()
+    pressure_sync()
     pending = {}                      # fd -> time the touch began; None once acted on
     held = set()                      # fds whose key was pressed: nothing more until the finger leaves it
     down = {}                         # fd -> last press-byte value
@@ -638,6 +963,7 @@ def watch(conf, follower, warper=None):
     touch_since = {}                  # (fd, bit) -> when the finger landed on a TOUCH_CHORD key; gone once engaged, pressed or lifted
     reload_pending = False            # a control-pipe poke arrived; applied once nothing follows the pen
     last_scan = time.monotonic()
+    last_follow = 0.0                 # monotonic time of the last follower.follow()
     try:
         while fds:
             now = time.monotonic()
@@ -652,12 +978,28 @@ def watch(conf, follower, warper=None):
                 timeout = min(timeout, max(0.0, deadline - now))
             if follower.up:
                 timeout = min(timeout, TICK)
-            readable = list(fds) + ([ctl] if ctl is not None else [])
+            readable = list(fds) + ([ctl] if ctl is not None else []) + ([pen] if pen is not None else [])
             ready, _, _ = select.select(readable, [], [], timeout)
+            pen_only = pen is not None and ready == [pen]     # only pen reports woke the loop (~200 a second while it draws)
             for fd in ready:
                 if fd == ctl:
                     os.read(ctl, 4096)                        # drain; any content means "reload"
                     reload_pending = True
+                    continue
+                if fd == pen:
+                    try:
+                        raw = os.read(pen, 24 * 256)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        raw = b""
+                    if raw:
+                        rec.feed(raw)
+                    else:                                         # the pen node is gone: written now, opened again at a rescan
+                        os.close(pen)
+                        pen = None
+                        rec.forget()                              # a stroke under way is not known to end (the next node starts clean)
+                        rec.flush(True)
                     continue
                 lay = fds[fd][3]
                 try:
@@ -766,7 +1108,9 @@ def watch(conf, follower, warper=None):
                     log("long press: precision mode off")
                     if not toggle("toggle"):
                         log("long press: the toggle failed, precision mode stays on")
-            if follower.up:
+            publish_held(any(down.values()) or bool(warper is not None and warper.held))
+            if follower.up and (not pen_only or now - last_follow >= TICK):   # a drag keeps its TICK pace, whatever the pen reports
+                last_follow = now
                 follower.follow()
             if reload_pending and not follower.up:
                 reload_pending = False          # a Tablet Center Apply, a delay change, or a hand poke
@@ -785,22 +1129,29 @@ def watch(conf, follower, warper=None):
                 conf = read_conf()              # a finger already resting on a key stays known
                 for node in fds.values():
                     node[3] = layout_for(conf, node[1], node[2]) or node[3]
+                pressure_sync()
                 log("conf reloaded")
             if now - last_scan >= RESCAN:
                 last_scan = now
                 if warper is not None:
-                    warper.ensure()                 # a virtual mouse lost or never created: another try
+                    warper.ensure(conf.get("WARP", "1") != "0")   # a virtual mouse lost or never created: another try
                 heal_poll()                         # a heal that failed gets its next try
                 turn_poll()                         # Left-handed mode changed in System Settings: one rescan
+                pressure_sync()                     # the pen node, the active profile, the write cadence
                 if tablet_nodes() != nodes:
                     return True                 # bus switch or tablet gone: rescan
                 missed = [node for node in missed if not attach(node, quiet=True)]
     finally:
         for fd in fds:
             os.close(fd)
+        if pen is not None:
+            os.close(pen)
+        if rec is not None:
+            rec.flush(True)
         follower.hide()
         if warper is not None:
             warper.release_all()
+        publish_held(False)
     return True
 
 
