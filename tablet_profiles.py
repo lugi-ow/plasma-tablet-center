@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# wacom_profiles.py - profile files (read/write/validate), checkpoint() and switch_to() - Qt-free, imported by wacom_center.py. Part of plasma-wacom-center (MIT).
+# tablet_profiles.py - profile files (read/write/validate), checkpoint() and switch_to() - Qt-free, imported by tablet_center.py. Part of plasma-tablet-center (MIT).
 import base64
 import configparser
 import fcntl
@@ -19,13 +19,25 @@ CONF = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tabpr
 KCMINPUTRC = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kcminputrc"
 RD = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "tabprec"
 CTL = RD / "hover.ctl"
-DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "wacom-center"
+DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "tablet-center"
 PROFILES_DIR = DATA / "profiles"
 BACKUP_DIR = DATA / "backup"
 PROFILES_INI = DATA / "profiles.ini"
-TOGGLE = Path.home() / ".local/bin/tablet-precision.sh"
+TOGGLE = Path(__file__).resolve().parent / "tablet-precision.sh"   # beside this file: ~/.local/bin or the package folder
 TOGGLE_COMPONENT = "net.local.tabprec-toggle.desktop"
 TOGGLE_FALLBACK = "Meta+Shift+F12"
+PKG_DIR = Path("/usr/lib/plasma-tablet-center")      # the .deb's folder (packaging/build-deb.sh)
+SETUP_MARK = DATA / "package-setup-done"
+OLD_DATA = DATA.parent / "wacom-center"      # keep-old-name
+OLD_EXT = ".wcprofile"                       # keep-old-name
+MOVED_NOTE = "MOVED-TO-tablet-center.txt"    # the one-line file migrate_old_data leaves in the old folder
+MOVE_MARK = ".moved-in"                      # the done-mark in the NEW folder: a verified copy never rolls back for the note
+HOVER_UNIT = "app-tablet\\x2dhover@autostart.service"   # systemd's name for /etc/xdg/autostart/tablet-hover.desktop
+SHORTCUTS = (("net.local.tabprec-toggle.desktop", "Precision mode toggle", 318767163),    # Meta+Shift+F12
+             ("net.local.tabprec-bigger.desktop", "Precision area bigger", 318767161),    # Meta+Shift+F10
+             ("net.local.tabprec-smaller.desktop", "Precision area smaller", 318767160))  # Meta+Shift+F9
+OLD_COPIES = (".local/bin/tablet-precision.sh", ".local/share/applications/net.local.tabprec-toggle.desktop",
+              ".config/autostart/tablet-hover.desktop")   # install.sh's: they shadow the package's entries
 DAEMON_DOWN = ("The pad helper is not running. Restart it: "
                "systemctl --user restart 'app-tablet\\x2dhover@autostart.service'")
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -52,7 +64,7 @@ _backed_up = set()          # profile names already copied to backup/ in this pr
 
 # ── chunk: ProfileError
 class ProfileError(Exception):
-    """A .wcprofile this reader refuses outright: read_profile never returns partial values for it."""
+    """A .tcprofile this reader refuses outright: read_profile never returns partial values for it."""
 
 
 # ── chunk: SwitchStopped
@@ -478,27 +490,27 @@ def set_grid_cell(cell, name):
 
 # ── chunk: profile_path
 def profile_path(name):
-    return PROFILES_DIR / f"{name}.wcprofile"
+    return PROFILES_DIR / f"{name}.tcprofile"
 
 
 # ── chunk: list_profiles
 def list_profiles():
     if not PROFILES_DIR.exists():
         return []
-    return sorted(p.stem for p in PROFILES_DIR.glob("*.wcprofile"))
+    return sorted(p.stem for p in PROFILES_DIR.glob("*.tcprofile"))
 
 
 # ── chunk: valid_name
 def valid_name(name, warnings=None):
     """Trim spaces; raise ValueError for a name this store refuses outright
-    (empty, '.', '..', '/', NUL, or one whose bytes plus '.wcprofile' pass
+    (empty, '.', '..', '/', NUL, or one whose bytes plus '.tcprofile' pass
     255 - the file name could not be written, rule 5's exception). A warning
     is appended (when a list is given) above 200 bytes."""
     name = name.strip()
     if name in ("", ".", "..") or "/" in name or "\x00" in name:
         raise ValueError(f"{name!r} is not allowed as a profile name")
     encoded = name.encode("utf-8")
-    if len(encoded) + len(".wcprofile") > 255:
+    if len(encoded) + len(".tcprofile") > 255:
         raise ValueError(f"{name!r} is too long for a file name")
     if warnings is not None and len(encoded) > 200:
         warnings.append(f"{name!r} is a very long profile name")
@@ -541,7 +553,7 @@ def write_profile(path, sections):
 
 # ── chunk: backup_now
 def backup_now(name):
-    """Copy profiles/<name>.wcprofile to backup/, once per window (for an
+    """Copy profiles/<name>.tcprofile to backup/, once per window (for an
     explicit Replace flow; checkpoint() does its own, text-changed check)."""
     if name in _backed_up:
         return
@@ -549,7 +561,7 @@ def backup_now(name):
     if src.exists():
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copyfile(src, BACKUP_DIR / f"{name}.wcprofile")
+            shutil.copyfile(src, BACKUP_DIR / f"{name}.tcprofile")
         except OSError:
             pass
     _backed_up.add(name)
@@ -682,7 +694,7 @@ def _apply_pie_rule(sections, warnings):
 
 # ── chunk: read_profile
 def read_profile(path):
-    """The only reader of .wcprofile files. Returns (sections, warnings);
+    """The only reader of .tcprofile files. Returns (sections, warnings);
     drops a bad line and warns. Raises ProfileError for a file refused
     outright (over 2 MB, not UTF-8) - never partial values then."""
     path = Path(path)
@@ -854,9 +866,11 @@ def _live_sections(pad, pen, sysname):
 # ── chunk: ensure_first_start
 def ensure_first_start(pad, pen, sysname=None):
     """First run (no profiles.ini): create 'My settings' from the live
-    values, make it active, put it in grid cell 1."""
+    values, make it active, put it in grid cell 1. While the previous version's folder still waits to be
+    copied (a failed move), the ini gets [Move] fallback = 1: the retry replaces it and 'My settings'."""
     if PROFILES_INI.exists():
         return
+    pending = not ((OLD_DATA / MOVED_NOTE).exists() or (DATA / MOVE_MARK).exists()) and bool(_move_pairs(OLD_DATA, DATA))
     live = _live_sections(pad, pen, sysname)
     write_profile(profile_path("My settings"), live)
     cp = _read_ini()
@@ -870,7 +884,159 @@ def ensure_first_start(pad, pen, sysname=None):
         cp.set("Device", "pad", pad)
     if pen:
         cp.set("Device", "pen", pen)
+    if pending:
+        cp.add_section("Move")
+        cp.set("Move", "fallback", "1")
     _write_ini(cp)
+
+
+# ── chunk: _move_pairs
+def _move_pairs(old, new):
+    """(source, target) for every file of the previous version's folder; target = the new folder, new extension."""
+    pairs = []
+    if not old.is_dir():
+        return pairs
+    for src in sorted(old.rglob("*")):
+        if src.is_file() and not src.is_symlink() and not src.name.endswith(".part"):
+            rel = src.relative_to(old)
+            if rel.suffix == OLD_EXT:
+                rel = rel.with_suffix(".tcprofile")
+            pairs.append((src, new / rel))
+    return pairs
+
+
+# ── chunk: migrate_old_data
+def migrate_old_data(old=None, new=None):
+    """The first start after the rename: COPY the previous version's data folder (profiles, backups,
+    profiles.ini, the package-setup mark) into DATA, each old-extension file under the new extension,
+    VERIFY every copied file byte for byte, write the done-mark in DATA, then a one-line note in the old
+    folder (best effort: a read-only old folder keeps the copy). The old folder is never moved or deleted;
+    a file the new folder already has is kept, except after a failed first move: then the new profiles.ini
+    carries [Move] fallback = 1 and the old profiles.ini and 'My settings' REPLACE the fallback ones.
+    Any failure removes what this call wrote (replaced files get their bytes back) and leaves the old
+    folder untouched, so the next start tries again. Returns the notes to show ([] = nothing to do)."""
+    old, new = Path(old or OLD_DATA), Path(new or DATA)
+    if (old / MOVED_NOTE).exists() or (new / MOVE_MARK).exists():
+        return []
+    pairs = _move_pairs(old, new)
+    if not pairs:
+        return []
+    ini = new / "profiles.ini"
+    fallback = False
+    if ini.exists():
+        cp = configparser.RawConfigParser()
+        cp.read(ini, encoding="utf-8")
+        fallback = cp.has_option("Move", "fallback")
+    swap = {"profiles.ini", "profiles/My settings.tcprofile"} if fallback else set()
+    made, replaced, part = [], {}, None
+    try:
+        for src, dst in pairs:
+            if dst.exists():
+                if dst.relative_to(new).as_posix() not in swap:
+                    continue
+                replaced[dst] = dst.read_bytes()
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            part = dst.with_name(dst.name + ".part")
+            shutil.copy2(src, part)
+            os.replace(part, dst)
+            made.append((src, dst))
+        part = None
+        for src, dst in made:
+            if src.read_bytes() != dst.read_bytes():
+                raise OSError(f"{dst.name} differs from its source")
+        if not all(dst.is_file() for _, dst in pairs):
+            raise OSError("a file is missing after the copy")
+        if fallback and ini.exists():             # the old folder had no profiles.ini: drop the mark itself
+            cp = configparser.RawConfigParser()
+            cp.optionxform = str
+            cp.read(ini, encoding="utf-8")
+            if cp.remove_section("Move"):
+                replaced.setdefault(ini, ini.read_bytes())
+                buf = io.StringIO()
+                cp.write(buf)
+                atomic_write(ini, buf.getvalue())
+        (new / MOVE_MARK).write_text(f"Copied from {old} on {time.strftime('%Y-%m-%d')}.\n")
+    except OSError as err:
+        for _, dst in made:
+            if dst in replaced:
+                dst.write_bytes(replaced[dst])
+            else:
+                dst.unlink(missing_ok=True)
+        if ini in replaced and ini not in [d for _, d in made]:
+            ini.write_bytes(replaced[ini])
+        if part:
+            part.unlink(missing_ok=True)
+        (new / MOVE_MARK).unlink(missing_ok=True)
+        return [f"Your settings from the previous version could not be copied ({err}).",
+                f"They are still in {old}; nothing was deleted. The next start tries again."]
+    try:
+        (old / MOVED_NOTE).write_text(f"These files were copied to {new} on {time.strftime('%Y-%m-%d')}.\n"
+                                      "This folder is no longer used; you can delete it.\n")
+    except OSError:
+        pass                                      # the done-mark in the new folder already says it
+    return [f"Your profiles from the previous version were copied to {new} ({len(made)} of {len(pairs)} files"
+            + (f", {len(pairs) - len(made)} already there)." if len(made) < len(pairs) else ").")]
+
+
+# ── chunk: package_setup
+def package_setup(here=None):
+    """The per-user steps install.sh did, for the packaged copy only (this
+    file in PKG_DIR): register the three shortcuts with kglobalaccel, live
+    at once, and start the pad helper's autostart unit now: no relogin.
+    Runs at the first start (no mark) and again whenever kglobalaccel has
+    lost the toggle (a purge, a login, a reinstall: VM, 2026-10-28); a key
+    the user cleared stays cleared. An install.sh copy in the home shadows
+    the package's entries: then nothing runs and the note says what to
+    remove first. Returns (first, notes): first = the mark was written now."""
+    here = Path(here or Path(__file__).resolve().parent)
+    if here != PKG_DIR:
+        return False, []
+    old = [p for p in OLD_COPIES if (Path.home() / p).exists()]
+    if old:
+        return False, ["An older copy from install.sh is still in your home folder:",
+                       *[f"  ~/{p}" for p in old],
+                       "Run ./uninstall.sh from the folder you cloned, then start Tablet Center again."]
+
+    def run(*cmd):                       # (ok, stdout)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            return r.returncode == 0, r.stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False, ""
+
+    bus = ("busctl", "--user", "call", "org.kde.kglobalaccel", "/kglobalaccel", "org.kde.KGlobalAccel")
+    first = not SETUP_MARK.exists()
+    if not first and run(*bus, "getComponent", "s", SHORTCUTS[0][0])[0]:
+        return False, []
+    notes, failed, keyless = [], [], []
+    for comp, friendly, key in SHORTCUTS:
+        # setShortcut with flag 2 (SetPresent) makes the key live at once; install.sh's setForeignShortcut
+        # left it inactive until the next login. No NoAutoloading flag: a key the user set before stays.
+        ok, out = run(*bus, "doRegister", "as", "4", comp, "_launch", friendly, friendly)
+        if ok:
+            ok, out = run(*bus, "setShortcut", "asaiu", "4", comp, "_launch", friendly, friendly,
+                          "1", str(key), "2")
+        if not ok:
+            failed.append(friendly)
+        elif out.split()[:2] == ["ai", "0"]:   # no key: another action owns it, or the user cleared it
+            keyless.append(friendly)
+    if failed:
+        notes.append("Could not register: " + ", ".join(failed) + ". Tablet Center tries again at its next start.")
+    elif keyless:
+        notes.append("No key for: " + ", ".join(keyless) +
+                     " (taken by another shortcut?). Set one in System Settings > Keyboard > Shortcuts.")
+    else:
+        notes.append("Shortcuts registered: Meta+Shift+F12 toggles precision mode, "
+                     "Meta+Shift+F10 / F9 make the area bigger / smaller.")
+    if run("systemctl", "--user", "daemon-reload")[0] and run("systemctl", "--user", "start", HOVER_UNIT)[0]:
+        notes.append("The pad helper is running; it starts at every login.")
+    else:
+        notes.append("The pad helper starts at your next login.")
+    if failed or not first:              # a failed registration is tried again at the next start
+        return False, notes
+    DATA.mkdir(parents=True, exist_ok=True)
+    SETUP_MARK.write_text("1\n")
+    return True, notes
 
 
 # ── chunk: checkpoint
@@ -895,9 +1061,9 @@ def checkpoint(pad, pen, sysname=None, status=None):
             old_image = old_sections["Image"]["png"]
             old_text = _render_profile(old_sections)
         except ProfileError:
-            note(f"{active}.wcprofile could not be read - recreated from the live values.")
+            note(f"{active}.tcprofile could not be read - recreated from the live values.")
     else:
-        note(f"{active}.wcprofile is missing - recreated from the live values.")
+        note(f"{active}.tcprofile is missing - recreated from the live values.")
     live = _live_sections(pad, pen, sysname)
     live["Image"]["png"] = old_image
     new_text = _render_profile(live)
@@ -1006,7 +1172,7 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
                 changed = True
         if changed:
             try:
-                subprocess.run([str(TOGGLE), "resize"], timeout=5,
+                subprocess.run(["bash", str(TOGGLE), "resize"], timeout=5,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -1016,4 +1182,4 @@ def switch_to(name, checkpoint_=True, pad=None, pen=None, sysname=None, status=N
 
 
 if __name__ == "__main__":
-    sys.exit(f"{Path(__file__).name} is a library, imported by wacom_center.py")
+    sys.exit(f"{Path(__file__).name} is a library, imported by tablet_center.py")

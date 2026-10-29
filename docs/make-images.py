@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# make-images.py OUT_DIR - drawn illustrations for plasma-wacom-center.
+# make-images.py OUT_DIR - drawn illustrations for plasma-tablet-center.
 # Writes placement.svg: three panels of the cursor-stationary placement rule
 # (TECHNICAL.md). A stylized 1280x720 desktop with the precision overlay
 # (precision_image, the same geometry the scripts use) stays available for a

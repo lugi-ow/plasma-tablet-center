@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# test_center.py <scratch dir> <repo dir> - Wacom Center offscreen: the Left-handed box turns the
+# test_center.py <scratch dir> <repo dir> - Tablet Center offscreen: the Left-handed box turns the
 # table with the tablet, every row keeps its own key, the ring's turn directions and default.
 # Scratch XDG_* dirs, a dead D-Bus address; the profiles rig's stubs run the real
 # kreadconfig6/kwriteconfig6 on a scratch kcminputrc
@@ -58,7 +58,7 @@ app = QApplication([])
 SAID = []                                    # every dialog the tab opened: modal, so never shown here
 for _name in ("warning", "information", "question"):
     setattr(QMessageBox, _name, staticmethod(lambda *a, **k: SAID.append(a) or QMessageBox.StandardButton.Ok))
-import wacom_center as wc  # noqa: E402
+import tablet_center as wc  # noqa: E402
 
 
 def grid_of(tab):
@@ -115,8 +115,8 @@ log = STUB_LOG.read_text() if STUB_LOG.exists() else ""
 check("C4 the box turns the table in place (key 3's unapplied Touch edit moves with its row to 11, 4) "
       "and sets Left-handed mode for both connections and live",
       flip is not None and moved == (11, 4) and flip.touches[2].text() == "Ctrl"
-      and wc.wacom_profiles.kreadconfig6(["Libinput", 1386, 855, PEN], "LeftHanded") == "true"
-      and wc.wacom_profiles.kreadconfig6(["Libinput", 1386, 864, PEN], "LeftHanded") == "true"
+      and wc.tablet_profiles.kreadconfig6(["Libinput", 1386, 855, PEN], "LeftHanded") == "true"
+      and wc.tablet_profiles.kreadconfig6(["Libinput", 1386, 864, PEN], "LeftHanded") == "true"
       and f"InputDevice/{SYSNAME} org.kde.KWin.InputDevice leftHanded b true" in log)
 
 
@@ -142,14 +142,14 @@ if set(labelled) == {"clockwise", "counter-clockwise"}:
     attempt(ring_tab.apply)
 check("C6 a shortcut typed in ring mode 2's \"clockwise\" box lands in the second field, the one a "
       "clockwise turn fires",
-      wc.wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 1], "0")
+      wc.tablet_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 1], "0")
       == "AxisKey,Meta+Shift+F6,Meta+Shift+F7,600")
 
 KCM.write_text(f"[Libinput][1386][855][{PEN}]\n")             # no ring binding yet: a fresh install
 fresh = attempt(lambda: wc.PrecisionTab(1.6, PAD))
 fresh_ticked = attempt(lambda: fresh.ring_swap.isChecked())
 attempt(lambda: fresh.apply_ring())
-written = wc.wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 0], "0")
+written = wc.tablet_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", PAD, 0], "0")
 KCM.write_text(f"[ButtonRebinds][TabletRing][{PAD}][0]\n0=AxisKey,Meta+Shift+F10,Meta+Shift+F9,600\n")
 older = attempt(lambda: wc.PrecisionTab(1.6, PAD))
 check("C7 by default a clockwise turn grows the area (the smaller chord first, Swap unticked), and an "

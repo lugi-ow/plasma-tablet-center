@@ -206,7 +206,7 @@ check "13b heal still gives up after its retries (exit 1)" '[ "$rc" -eq 1 ]'
 check "no notifications (no errors)"    '! grep -q notify-send "$STUB_LOG"'
 
 # 14: the tablet is switched off while precision mode is on (the 2026-09-12 hardware test). OFF must still
-#     end the mode and close the overlay: the keyboard shortcut and Wacom Center's button are then the
+#     end the mode and close the overlay: the keyboard shortcut and Tablet Center's button are then the
 #     only ways left, and kcminputrc already names the base, so there is nothing live to restore.
 appear 864                                  # test 12 ended OFF on the USB pen: the Bluetooth pen comes back fresh, on the base
 "$T" toggle; sleep 0.4

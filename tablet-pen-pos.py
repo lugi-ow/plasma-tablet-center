@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-pen-pos.py [--mapped] - print "X Y SCREEN_W SCREEN_H" (physical px) for the tablet pen; exit 1 = no position.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import ctypes as C
 import fcntl
 import os

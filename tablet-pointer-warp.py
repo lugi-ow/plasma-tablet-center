@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-pointer-warp.py X Y [SW SH] - move the MOUSE pointer to a screen pixel through a virtual mouse on uinput; tablet-hover.py imports it.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import ctypes as C
 import fcntl
 import os

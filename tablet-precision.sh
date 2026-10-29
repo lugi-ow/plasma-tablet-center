@@ -1,6 +1,6 @@
 #!/bin/bash
 # tablet-precision.sh [toggle|resize|where|suspend|resume|heal|pause] - precision mode on Plasma 6 Wayland; the only writer of the pen mapping.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 
 # ── chunk: config-and-paths
 export LC_ALL=C.UTF-8    # decimal point regardless of locale; UTF-8 keeps Qt quiet
@@ -230,7 +230,7 @@ exec 9>"$RD/lock"; flock -w 5 9 || exit 1   # one run at a time: a long press ma
 [ -f "$CONF" ] && . "$CONF"   # read AFTER the lock: a ring tick queued behind another applies the newest SCALE, not the one it was born with
 SCALE=${SCALE:-0.36}; SCALE=${SCALE/,/.}; case "$SCALE" in *[!0-9.]*|*.*.*|.) SCALE=0.36;; esac   # a comma decimal (a hand edit under
 DIM=${DIM:-0.10}; DIM=${DIM/,/.}; case "$DIM" in *[!0-9.]*|*.*.*|.) DIM=0.10;; esac               # a comma locale) reads as a dot; junk = the default
-# The soft cap on SCALE (Wacom Center's two size-limit fields): 0 = no cap on that side. Without one the
+# The soft cap on SCALE (Tablet Center's two size-limit fields): 0 = no cap on that side. Without one the
 # area still ends at the full screen width and at one pixel - a wider or an empty area maps nothing.
 case "${SCALE_MIN:-}" in ""|*[!0-9.]*) SCALE_MIN=0.05;; esac
 case "${SCALE_MAX:-}" in ""|*[!0-9.]*) SCALE_MAX=0.80;; esac
@@ -240,7 +240,7 @@ case "$RECONNECT" in *[!0-9.]*) RECONNECT=60;; esac
 
 # OFF must work with the tablet gone: switched off, a flat battery, the cable out with Bluetooth off.
 # Otherwise find_pen exits first, the OFF branch never runs and the overlay stays on the screen with
-# nothing able to close it - the pad key, the keyboard shortcut, Wacom Center and the daemon all come
+# nothing able to close it - the pad key, the keyboard shortcut, Tablet Center and the daemon all come
 # through here. Found on the hardware 2026-09-12.
 [ "$MODE" = toggle ] && [ -f "$STATE" ] && PEN_OPTIONAL=1
 [ "$MODE" = resize ] || [ "$MODE" = pause ] || find_pen   # resize looks the pen up only when it has something to apply; pause never does

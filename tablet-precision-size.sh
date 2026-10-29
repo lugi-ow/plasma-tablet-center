@@ -1,6 +1,6 @@
 #!/bin/bash
 # tablet-precision-size.sh {up|down} - one ring tick: step the precision area size (conf SCALE) by RING_STEP points.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 
 export LC_ALL=C.UTF-8
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/tabprec.conf"

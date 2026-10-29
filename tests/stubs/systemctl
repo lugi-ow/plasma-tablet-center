@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stub systemctl for the package_setup rig: logs every call to $STUB_LOG, succeeds; never the live user manager.
+echo "systemctl $*" >> "${STUB_LOG:-/dev/stderr}"
+exit 0

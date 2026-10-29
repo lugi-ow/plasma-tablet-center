@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-overlay.py X Y W H [DIM] [--waiting] [--follow | --fifo PATH] - the dim-around overlay of precision mode.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import os
 import stat
 import sys
@@ -30,7 +30,7 @@ if len(args) not in (4, 5):
 app = QGuiApplication(sys.argv[:1])
 # app_id for a normal toplevel; inert here - tablet-overlay.qml is a layer-shell
 # surface, which carries none, so KWin reports the interpreter name instead.
-app.setDesktopFileName("wacom-center")
+app.setDesktopFileName("tablet-center")
 engine = QQmlApplicationEngine()
 qml = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tablet-overlay.qml")
 engine.load(QUrl.fromLocalFile(qml))

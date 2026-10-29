@@ -2,7 +2,7 @@ The pen reaches only a small part of the screen (precision mode)
 A simple rescue procedure
 =======================================================================
 
-plasma-wacom-center, 2026-09-13
+plasma-tablet-center, 2026-09-13
 
 
 What happened
@@ -12,13 +12,13 @@ KDE saves the screen area that the pen maps to, and it uses that area again
 each time the tablet connects. While precision mode is on, the area is a
 small rectangle.
 
-plasma-wacom-center writes the normal area back into KDE's settings file
+plasma-tablet-center writes the normal area back into KDE's settings file
 every time it changes the area, and uninstall.sh switches precision mode
 off before it removes anything. So a small area after an uninstall is rare.
-It can stay after an older version of plasma-wacom-center, or when the
+It can stay after an older version of plasma-tablet-center, or when the
 software could not write KDE's settings file.
 
-You do not need plasma-wacom-center installed for these steps.
+You do not need plasma-tablet-center installed for these steps.
 
 
 The steps
@@ -49,11 +49,11 @@ The steps
        kwriteconfig6 --notify --file kcminputrc --group Libinput --group 1386 --group 864 --group 'Wacom Intuos Pro M Pen' --key OutputArea --delete
 
    Nothing appears. Keep the word --notify in the command. It announces the
-   change to the desktop, the way plasma-wacom-center writes this file.
+   change to the desktop, the way plasma-tablet-center writes this file.
 
 6. Run the command from step 4 again. No OutputArea line appears now.
 
-7. Move the record that plasma-wacom-center keeps to the Trash:
+7. Move the record that plasma-tablet-center keeps to the Trash:
 
        gio trash ~/.local/state/tabprec
 

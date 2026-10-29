@@ -1,5 +1,5 @@
 // tablet-overlay.qml - the one drawing behind every overlay: dim bands around a clear rectangle, a 2 px amber border inside it (solid = precision mode, dashes flowing clockwise = a preview).
-// Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+// Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import QtQuick
 import QtQuick.Window
 import QtQuick.Shapes

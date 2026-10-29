@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# test_profiles.py <scratch dir> <repo dir> - Qt-free rig for wacom_profiles.py.
+# test_profiles.py <scratch dir> <repo dir> - Qt-free rig for tablet_profiles.py.
 # Scratch XDG_* dirs; stubs/profiles-only/{kreadconfig6,kwriteconfig6,qdbus6}
 # wrap the real binaries with a call log (a scratch kcminputrc reads/writes
 # exactly like the live one); the shared stubs/busctl already logs every
@@ -32,7 +32,7 @@ os.environ.update({
     "DBUS_SESSION_BUS_ADDRESS": f"unix:path={SCRATCH}/no-bus",   # kwriteconfig6 --notify writes the file and exits 0
 })                                                               # on a dead bus: no broadcasts on the live session
 sys.path.insert(0, str(REPO))
-import wacom_profiles as wp  # noqa: E402 - env vars must be set first: its paths read them at import
+import tablet_profiles as wp  # noqa: E402 - env vars must be set first: its paths read them at import
 
 _orig_atomic_write = wp.atomic_write
 
@@ -99,7 +99,7 @@ hostile = ("﻿" + "\r\n".join([
     f"png={oversized_png}",
 ]) + "\r\n")
 wp.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-(wp.PROFILES_DIR / "Hostile.wcprofile").write_bytes(hostile.encode("utf-8"))
+(wp.PROFILES_DIR / "Hostile.tcprofile").write_bytes(hostile.encode("utf-8"))
 warns_h = []
 wp.switch_to("Hostile", pad=PAD, pen=None, sysname=None, status=warns_h.append)
 declared = subprocess.run(["env", "-i", "bash", "-c", f'. "{wp.CONF}"; declare -p'],      # sourced in the scratch:
@@ -112,7 +112,7 @@ check("hostile-import: the HOVER_MASK key's own binding is untouched", wp.kreadc
 check("hostile-import: the oversized PNG was dropped with a warning", any("too large" in w for w in warns_h))
 
 big = "[Conf]\nSCALE=0.30\n" + "#" * (2 * 1024 * 1024 + 100)
-(wp.PROFILES_DIR / "HostileBig.wcprofile").write_text(big)
+(wp.PROFILES_DIR / "HostileBig.tcprofile").write_text(big)
 conf_before, kcm_before = wp.CONF.read_bytes(), wp.KCMINPUTRC.read_bytes()
 stopped_at = []
 try:
@@ -317,6 +317,55 @@ check("names: valid_name keeps a Cyrillic name as is", wp.valid_name(cyr) == cyr
 for bad in ("", "..", "a/b"):
     check(f"names: {bad!r} refused", _refused(bad))
 check("names: a 250-byte name refused", _refused("x" * 250))
+
+# ==================================================================== package setup
+# The .deb copy's per-user steps (install.sh's 3/5 and the helper's start): a scratch HOME,
+# the logging busctl and systemctl stubs; never the live kglobalaccel or user manager.
+os.environ["HOME"] = str(SCRATCH / "home")
+reset_data()
+pos = log_pos()
+check("package: a copy outside the package folder does nothing",
+      wp.package_setup(here=REPO) == (False, []) and not log_lines_from(pos))
+first, notes = wp.package_setup(here=wp.PKG_DIR)
+lines = log_lines_from(pos)
+regs = [l for l in lines if "setShortcut asaiu" in l]
+check("package: the first start runs", first and wp.SETUP_MARK.exists())
+check("package: 3 doRegister calls", sum("doRegister" in l for l in lines) == 3)
+check("package: F12 / F10 / F9 to toggle / bigger / smaller",
+      [l.split()[-2:] for l in regs] == [["318767163", "2"], ["318767161", "2"], ["318767160", "2"]]
+      and all(c in r for c, r in zip(("toggle", "bigger", "smaller"), regs)))
+check("package: the helper unit started after a daemon-reload",
+      lines[-2:] == ["systemctl --user daemon-reload", f"systemctl --user start {wp.HOVER_UNIT}"])
+pos = log_pos()
+check("package: a second start only asks kglobalaccel for the toggle",
+      wp.package_setup(here=wp.PKG_DIR) == (False, [])
+      and [l.split()[6] for l in log_lines_from(pos)] == ["getComponent"])
+pos = log_pos()
+os.environ["STUB_NO_COMPONENT"] = "1"          # a purge and a login made kglobalaccel forget it
+first, notes = wp.package_setup(here=wp.PKG_DIR)
+del os.environ["STUB_NO_COMPONENT"]
+check("package: a lost toggle is registered again, no first-start question",
+      not first and sum("setShortcut asaiu" in l for l in log_lines_from(pos)) == 3
+      and notes[0].startswith("Shortcuts registered"))
+wp.SETUP_MARK.unlink()
+old = SCRATCH / "home/.config/autostart/tablet-hover.desktop"
+old.parent.mkdir(parents=True)
+old.write_text("[Desktop Entry]\n")
+pos = log_pos()
+first, notes = wp.package_setup(here=wp.PKG_DIR)
+check("package: an install.sh copy stops it and is named",
+      not first and not log_lines_from(pos) and "  ~/.config/autostart/tablet-hover.desktop" in notes)
+old.unlink()
+os.environ["STUB_CALL_FAIL"] = "1"
+first, notes = wp.package_setup(here=wp.PKG_DIR)
+del os.environ["STUB_CALL_FAIL"]
+check("package: a refused registration leaves no mark and no first-start question",
+      not first and not wp.SETUP_MARK.exists() and notes[0].startswith("Could not register"))
+os.environ["STUB_KEY_TAKEN"] = "1"
+first, notes = wp.package_setup(here=wp.PKG_DIR)
+del os.environ["STUB_KEY_TAKEN"]
+check("package: a key another action owns is named, not reported as registered",
+      first and wp.SETUP_MARK.exists() and notes[0].startswith("No key for: Precision mode toggle"))
 
 print(f"failures: {fails}")
 sys.exit(1 if fails else 0)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-hover.py [--simulate] - the ExpressKey daemon: touch preview (ghost), area drag, pad chords, mouse warp.
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import fcntl
 import importlib.util
 import os
@@ -19,11 +19,12 @@ STATE = RD / "saved-area"           # exists while precision mode is ON
 AREA = RD / "area"                  # "X Y W H DIM SW SH FX FY FW FH" of the mapping precision mode has on (the toggle writes it)
 FIFO = RD / "overlay.fifo"          # the live overlay's geometry pipe (tablet-overlay.py --fifo)
 MARK = RD / "relocate"              # kept fresh while the overlay follows the pen: the toggle moves (< 3 s old) instead of switching off
-CTL = RD / "hover.ctl"              # a line here = re-read the conf (Wacom Center pokes it on Apply)
+CTL = RD / "hover.ctl"              # a line here = re-read the conf (Tablet Center pokes it on Apply)
+CTL_FD = None                       # its open end (open_ctl): held for the helper's whole life
 KCMINPUTRC = CONF.with_name("kcminputrc")   # KWin writes the pen's Left-handed mode here: turn_poll watches its stamp
 DIR = Path(__file__).resolve().parent
 SHOW_DELAY = 0.06                    # touch sense must hold this long before the ghost (debounce)
-HOLD_DEFAULT = 0.15                  # ...and this long before a relocation (precision on); conf key HOLD, Wacom Center field
+HOLD_DEFAULT = 0.15                  # ...and this long before a relocation (precision on); conf key HOLD, Tablet Center field
 LONG_DEFAULT = 0.7                   # a press that confirmed a drag, kept down this long, switches precision mode off; conf key LONG, 0 = off
 RESCAN = 2.0                        # seconds between checks for new/lost hidraw nodes (hardware only)
 GRACE = 10.0                        # seconds the tablet may be gone with precision mode on before the mode pauses: a cable swap reconnects inside it
@@ -131,9 +132,9 @@ def layout_for(conf, bus, product):
             "mask": mask, "press_mask": pick("PRESS_MASK", mask)}
 
 
-# ── chunk: wacom_nodes
-def wacom_nodes():
-    """[(path, bus, product)] for every Wacom hidraw node (vendor 056A)."""
+# ── chunk: tablet_nodes
+def tablet_nodes():
+    """[(path, bus, product)] for every tablet hidraw node (vendor 056A)."""
     found = []
     base = "/sys/class/hidraw"
     try:
@@ -546,6 +547,49 @@ def mask_text(mask):
     return "none (no Precision key ticked)" if mask is None else f"0x{mask:02x}"
 
 
+# ── chunk: open_ctl
+def open_ctl():
+    """Make the control pipe if it is missing (a plain file left by a hand `echo reload >` is replaced: select would
+    spin on it) and open it, once: the helper holds it for its whole life, so Tablet Center's poke finds a reader
+    while the tablet sleeps. Opened again only when the file at CTL is no longer the one held. None = it would not open."""
+    global CTL_FD
+    try:
+        RD.mkdir(parents=True, exist_ok=True)   # the toggle makes this too, but the daemon starts first at a fresh login
+        if CTL.exists() and not stat.S_ISFIFO(CTL.stat().st_mode):
+            CTL.unlink()
+        os.mkfifo(CTL)
+    except FileExistsError:
+        pass
+    except OSError as err:
+        log(f"no control pipe ({err}): conf reloads need a daemon restart")
+    if CTL_FD is not None:
+        try:
+            if os.path.samestat(os.fstat(CTL_FD), os.stat(CTL)):
+                return CTL_FD
+        except OSError:
+            pass
+        os.close(CTL_FD)
+        CTL_FD = None
+    try:
+        CTL_FD = os.open(CTL, os.O_RDWR | os.O_NONBLOCK)   # RDWR: pokers may come and go
+    except OSError:
+        CTL_FD = None
+    return CTL_FD
+
+
+# ── chunk: drain_ctl
+def drain_ctl():
+    """Read and throw away what waits on the control pipe: pokes made while the tablet sleeps must not pile up
+    (the next watch reads the conf fresh anyway)."""
+    if CTL_FD is None:
+        return
+    try:
+        while os.read(CTL_FD, 4096):
+            pass
+    except OSError:
+        pass                                    # EAGAIN: empty
+
+
 # ── chunk: watch
 def watch(conf, follower, warper=None):
     """Follow the current set of hidraw nodes until it changes or goes away.
@@ -553,20 +597,9 @@ def watch(conf, follower, warper=None):
     follows the pen). False = there was nothing to watch."""
     if warper is not None:
         warper.ensure()
-    nodes = wacom_nodes()
-    try:
-        RD.mkdir(parents=True, exist_ok=True)   # the toggle makes this too, but the daemon starts first at a fresh login
-        if CTL.exists() and not stat.S_ISFIFO(CTL.stat().st_mode):
-            CTL.unlink()                        # a plain file left by a hand `echo reload >` is ALWAYS ready: select would spin
-        os.mkfifo(CTL)
-    except FileExistsError:
-        pass
-    except OSError as err:
-        log(f"no control pipe ({err}): conf reloads need a daemon restart")
-    try:
-        ctl = os.open(CTL, os.O_RDWR | os.O_NONBLOCK)   # RDWR: pokers may come and go
-    except OSError:
-        ctl = None
+    nodes = tablet_nodes()
+    ctl = open_ctl()                  # held for the helper's whole life: never closed here
+    drain_ctl()                       # pokes of the absence: the read below sees their conf
     conf = read_conf()                # again, now that the pipe is open: a poke sent before this open is not lost
     fds = {}                          # fd -> [path, bus, product, layout]
 
@@ -593,8 +626,6 @@ def watch(conf, follower, warper=None):
     # changes again. Such a node is tried again at every rescan.
     missed = [node for node in nodes if not attach(node)]
     if not fds:
-        if ctl is not None:
-            os.close(ctl)
         return False
     heal()                            # a tablet just appeared: a precision rectangle KWin kept for its pen is put right
     TURN["key"] = None                # ...and its Left-handed mode is asked again (KDE keeps it per cable and Bluetooth)
@@ -738,7 +769,7 @@ def watch(conf, follower, warper=None):
             if follower.up:
                 follower.follow()
             if reload_pending and not follower.up:
-                reload_pending = False          # a Wacom Center Apply, a delay change, or a hand poke
+                reload_pending = False          # a Tablet Center Apply, a delay change, or a hand poke
                 # Every chord goes UP here, while the finger is still down. The poke comes from a
                 # profile switch that rewrites kcminputrc a moment later, and KWin rebuilds its whole
                 # rebind table and its virtual device on that write: a release sent after it never
@@ -761,14 +792,12 @@ def watch(conf, follower, warper=None):
                     warper.ensure()                 # a virtual mouse lost or never created: another try
                 heal_poll()                         # a heal that failed gets its next try
                 turn_poll()                         # Left-handed mode changed in System Settings: one rescan
-                if wacom_nodes() != nodes:
+                if tablet_nodes() != nodes:
                     return True                 # bus switch or tablet gone: rescan
                 missed = [node for node in missed if not attach(node, quiet=True)]
     finally:
         for fd in fds:
             os.close(fd)
-        if ctl is not None:
-            os.close(ctl)
         follower.hide()
         if warper is not None:
             warper.release_all()
@@ -809,6 +838,7 @@ def cycle(follower, warper, gone, rescan=None):
         gone.reset()                         # it was here until just now
     else:
         gone.check()
+        drain_ctl()
         time.sleep(RESCAN if rescan is None else rescan)   # tablet asleep or not yet connected: poll
 
 
@@ -827,6 +857,7 @@ def main():
         return
     warper = Warper()
     gone = Absence()
+    open_ctl()                            # a reader from the start: a poke while no tablet is here is not "helper down"
     while True:
         cycle(follower, warper, gone)
 

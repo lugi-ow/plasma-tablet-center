@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh - deploy plasma-wacom-center for the current user; safe to re-run. No root for the deploy itself:
+# install.sh - deploy plasma-tablet-center for the current user; safe to re-run. No root for the deploy itself:
 # one udev rule (printed at the end) needs sudo - the pen position, the express keys' touch sense, /dev/uinput for the pies.
 set -e
 cd "$(dirname "$0")"
@@ -9,10 +9,13 @@ KW=org.kde.kglobalaccel
 
 echo "== 1/5 Deploying to $BIN"
 mkdir -p "$BIN" "$APPS"
+# An install from before the rename: its two program files and its menu entry go (only an older install.sh wrote them).
+# Your profiles move at the first start of the new app.
+rm -f "$BIN/wacom_center.py" "$BIN/wacom_profiles.py" "$APPS/wacom-center.desktop"   # keep-old-name
 install -m 755 tablet-precision.sh tablet-precision-size.sh \
     tablet-pen-pos.py tablet-overlay.py tablet-size-preview.py \
     tablet-pointer-warp.py tablet-hover.py tablet-pad-probe.py \
-    wacom_center.py wacom_profiles.py "$BIN/"
+    tablet_center.py tablet_profiles.py "$BIN/"
 install -m 644 tablet-overlay.qml "$BIN/"
 rm -f "$BIN/tablet-size-preview.qml"    # retired: the size preview draws with tablet-overlay.qml
 
@@ -31,12 +34,12 @@ EOF
 mkentry tabprec-toggle "tablet-precision.sh" "Precision mode toggle"
 mkentry tabprec-bigger "tablet-precision-size.sh up" "Precision area bigger"
 mkentry tabprec-smaller "tablet-precision-size.sh down" "Precision area smaller"
-cat > "$APPS/wacom-center.desktop" <<EOF
+cat > "$APPS/tablet-center.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Wacom Center
+Name=Custom Drawing Tablet Center
 Comment=Tablet precision mode and express key settings
-Exec=python3 $BIN/wacom_center.py
+Exec=python3 $BIN/tablet_center.py
 Icon=input-tablet
 Terminal=false
 Categories=Settings;HardwareSettings;
@@ -51,13 +54,16 @@ Exec=python3 $BIN/tablet-hover.py
 NoDisplay=true
 EOF
 kbuildsycoca6 2>/dev/null || true
+systemctl --user daemon-reload 2>/dev/null &&      # the helper now, not at the next login
+    systemctl --user restart 'app-tablet\x2dhover@autostart.service' 2>/dev/null || true
 
 echo "== 3/5 Registering global shortcuts (F12 toggle, F10 bigger, F9 smaller)"
 reg() {  # component, friendly, qt-keycode
     busctl --user call $KW /kglobalaccel org.kde.KGlobalAccel doRegister \
         as 4 "net.local.$1.desktop" "_launch" "$2" "$2"
-    busctl --user call $KW /kglobalaccel org.kde.KGlobalAccel setForeignShortcut \
-        asai 4 "net.local.$1.desktop" "_launch" "$2" "$2" 1 "$3"
+    # setShortcut with flag 2 (SetPresent): the key works at once (setForeignShortcut left it off until the next login)
+    busctl --user call $KW /kglobalaccel org.kde.KGlobalAccel setShortcut \
+        asaiu 4 "net.local.$1.desktop" "_launch" "$2" "$2" 1 "$3" 2 >/dev/null
 }
 reg tabprec-toggle  "Precision mode toggle"  318767163   # Meta+Shift+F12
 reg tabprec-bigger  "Precision area bigger"  318767161   # Meta+Shift+F10
@@ -83,9 +89,9 @@ if [ -n "$pad" ]; then
         if kwriteconfig6 --notify --file kcminputrc --group ButtonRebinds \
             --group TabletRing --group "$pad" --group 0 --key 0 \
             "AxisKey,Meta+Shift+F9,Meta+Shift+F10,600"; then   # KWin fires the first chord on a counter-clockwise turn
-            echo "Ring bound: clockwise makes the area bigger, one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step, the angle and the direction in Wacom Center."
+            echo "Ring bound: clockwise makes the area bigger, one tick per 5-degree step of the ring (KWin's threshold is degrees x 120); change the step, the angle and the direction in Tablet Center."
         else
-            echo "Could not write the ring binding - bind it in Wacom Center (Pad buttons tab, the ring rows)."
+            echo "Could not write the ring binding - bind it in Tablet Center (Pad buttons tab, the ring rows)."
         fi
     fi
 else
@@ -106,7 +112,7 @@ fi
 cat <<'EOF'
 
 A. One permission rule (one sudo, once). It lets the scripts read the pen's
-   position, on Wacom tablets the express keys' touch sense, and the
+   position, on drawing tablets the express keys' touch sense, and the
    virtual mouse that opens a pie under the pen (/dev/uinput):
 
    printf '%s\n' 'SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Pen*", TAG+="uaccess"' 'KERNEL=="hidraw*", KERNELS=="0003:056A:*|0005:056A:*", TAG+="uaccess"' 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/70-tablet-access.rules && sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input --subsystem-match=hidraw --subsystem-match=misc
@@ -114,7 +120,7 @@ A. One permission rule (one sudo, once). It lets the scripts read the pen's
    Without it, precision mode centres on the mouse cursor instead of the
    pen, and the touch preview stays off.
 
-B. Bind the pad buttons in Wacom Center (the Pad buttons tab):
+B. Bind the pad buttons in Tablet Center (the Pad buttons tab):
    - Precision mode: tick one key's "Precision" box, click "Apply
      bindings". The tab gives that key the toggle shortcut, the ghost
      and the area drag by itself.
@@ -127,17 +133,19 @@ B. Bind the pad buttons in Wacom Center (the Pad buttons tab):
    Use only F-keys and modifiers in pad chords - letters silently fail
    under non-Latin keyboard layouts.
 
-C. Log out and back in once. Until then, the new shortcuts start nothing:
-   the shortcut daemon loads their commands only at login.
+C. No logout needed: the shortcuts work at once. After step A, restart the
+   pad helper once, so it can read the keys:
+
+   systemctl --user restart 'app-tablet\x2dhover@autostart.service'
 
 D. ExpressKey touch preview - a ghost of the precision area while a finger
    RESTS on the precision key, before the press. Wacom Intuos Pro (2017 or
-   later): after step A, a relogin and the "Precision" tick from step B,
+   later): after step A and the "Precision" tick from step B,
    a resting finger shows the ghost. With the mode on, a resting finger
    drags the area, a press lands it, and keeping the key pressed leaves the
-   mode (the times are fields in Wacom Center). Other tablets: only keys with a touch
+   mode (the times are fields in Tablet Center). Other tablets: only keys with a touch
    sensor can do this (Intuos Pro, Cintiq Pro, MobileStudio Pro). For a
-   Wacom model the daemon does not know, run
+   tablet model the daemon does not know, run
    ~/.local/bin/tablet-pad-probe.py once per connection type (USB and
    Bluetooth differ) and put the bytes it shows into ~/.config/tabprec.conf
    as HOVER_REPORT_USB, HOVER_BYTE_USB, PRESS_BYTE_USB (and the same with

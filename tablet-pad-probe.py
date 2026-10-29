@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-pad-probe.py [--all] - print every byte that changes in the tablet's raw HID reports (finds the touch and press bytes).
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import os
 import re
 import select
@@ -14,9 +14,9 @@ USB_QUIET_REPORTS = {0x10}    # USB pen report (continuous in proximity): skippe
 BUS = {"0003": "usb", "0005": "bt"}
 
 
-# ── chunk: wacom_nodes
-def wacom_nodes():
-    """[(path, bus, name)] for every Wacom hidraw node (vendor 056A)."""
+# ── chunk: tablet_nodes
+def tablet_nodes():
+    """[(path, bus, name)] for every tablet hidraw node (vendor 056A)."""
     found = []
     base = "/sys/class/hidraw"
     try:
@@ -44,9 +44,9 @@ def fmt(value):
 # ── chunk: main
 def main():
     show_all = "--all" in sys.argv
-    nodes = wacom_nodes()
+    nodes = tablet_nodes()
     if not nodes:
-        sys.exit("no Wacom hidraw device (tablet asleep or not connected)")
+        sys.exit("no tablet hidraw device (tablet asleep or not connected)")
     fds = {}
     for path, bus, name in nodes:
         try:

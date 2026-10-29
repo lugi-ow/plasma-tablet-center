@@ -1,9 +1,9 @@
-# plasma-wacom-center: technical notes
+# plasma-tablet-center: technical notes
 
 How the toolkit works, for a reader who wants to change it or port it. The
 README says what it does. `PROJECT_MAP.md` lists every file, process,
 runtime file and chunk marker. `KNOWLEDGE.md` holds the facts that each
-cost a debugging session. Written for plasma-wacom-center v2 on Plasma 6.6,
+cost a debugging session. Written for plasma-tablet-center v2 on Plasma 6.6,
 September 2026.
 
 ## The pieces
@@ -17,7 +17,7 @@ September 2026.
 | `tablet-precision-size.sh` | one ring tick |
 | `tablet-size-preview.py` | the size preview, with precision mode off |
 | `tablet-pointer-warp.py` | the virtual device: the warp and the chords (the daemon imports it) |
-| `wacom_center.py` | the settings window |
+| `tablet_center.py` | the settings window |
 | `tablet-pad-probe.py` | prints the touch and press bytes of an unknown tablet |
 | `install.sh` | the deploy: scripts, shortcuts, autostart, the ring binding |
 | `uninstall.sh` | the reverse: daemon stopped, scripts, entries and shortcuts removed, the pen ledgers moved to the Trash; settings kept |
@@ -28,7 +28,7 @@ by an autostart entry. Everything else is one process per key press.
 An update (`install.sh` run again) replaces the scripts in place. The daemon
 keeps its old code until a login or
 `systemctl --user restart 'app-tablet\x2dhover@autostart.service'`, though
-the scripts it starts are the new ones at once; an open Wacom Center window
+the scripts it starts are the new ones at once; an open Tablet Center window
 keeps its old code until it is closed.
 
 ## Precision mode
@@ -93,7 +93,7 @@ is gone and precision mode is still on. Two things make that safe.
 Toggle OFF does not need the tablet. Every mode used to look the pen up first
 and exit when there was none, so the OFF branch never ran and the overlay
 stayed on the screen with nothing able to close it — not the pad key, the
-keyboard shortcut, Wacom Center or the daemon. Found on the hardware on
+keyboard shortcut, Tablet Center or the daemon. Found on the hardware on
 2026-09-12. OFF now ends the mode without a pen. Nothing live needs restoring,
 because `kcminputrc` already names the base and KWin loads it when the tablet
 returns.
@@ -125,7 +125,7 @@ The placement keeps the cursor where it is:
 `SCALE` is the conf value (a fraction of the screen width, held inside
 `SCALE_MIN` and `SCALE_MAX`, see Settings) and `aspect`
 is the tablet's own width / height, read from the device's `size` property.
-Wacom's Windows driver uses the same rule. Near a screen border the area
+The Windows driver for these tablets uses the same rule. Near a screen border the area
 drifts slower than the cursor, and it never leaves the screen.
 
 A resize (the ring, mode on) keeps the area's own centre:
@@ -175,7 +175,7 @@ rescan (2 seconds), and no warp waits for D-Bus. The placement rule and the
 area math need no change. The XWayland source comes through KWin and is
 turned already.
 
-Wacom Center has its own box for the mode, at the top of the Pad buttons
+Tablet Center has its own box for the mode, at the top of the Pad buttons
 tab. The box writes `LeftHanded` into every `kcminputrc` group of the pen,
 plus the other connection's group from libwacom's `DeviceMatch`, then sets
 `leftHanded` live over D-Bus: System Settings writes only the connection in
@@ -228,7 +228,7 @@ The threshold is not in degrees. KWin multiplies the degrees travelled since
 the last tick by 120 and fires one chord when the product reaches the
 threshold. The Intuos Pro ring reports 5-degree steps, so a threshold up to
 600 fires on every step (72 ticks per turn) and 1800 fires every 15
-degrees. Wacom Center shows the threshold as degrees and rewrites the
+degrees. Tablet Center shows the threshold as degrees and rewrites the
 binding.
 
 Each tick runs `tablet-precision-size.sh up` or `down` once. The script adds
@@ -245,8 +245,8 @@ screen exits at once. libinput counts ring degrees counter-clockwise, and
 KWin fires the first chord on a counter-clockwise turn (checked on an Intuos
 Pro M, October 2026). So the binding puts the smaller chord first, and a
 clockwise turn makes the area bigger. The "Swap the ring direction" box in
-Wacom Center exchanges the two chords. Installs from before October 2026
-put the bigger chord first, and Wacom Center shows them with the box
+Tablet Center exchanges the two chords. Installs from before October 2026
+put the bigger chord first, and Tablet Center shows them with the box
 ticked. The Pad buttons tab names each ring box after the turn that fires
 it.
 
@@ -318,7 +318,7 @@ same grant Steam's `steam-devices` package makes.
 
 ## Pen
 
-Wacom Center's Pen tab sets the three buttons built into the pen, plus
+Tablet Center's Pen tab sets the three buttons built into the pen, plus
 the pressure curve and the pressure range. These live in the pen
 device itself, not in the pad, so the tab uses a separate code path
 from the Pad buttons tab even though the layout matches it.
@@ -330,10 +330,10 @@ Bluetooth report for this tablet family has no bit for the combined
 press, so the button does nothing there. A pen with no third button
 still shows the box, and the box simply never fires.
 
-A box that holds a mouse-button or scroll binding set outside Wacom
+A box that holds a mouse-button or scroll binding set outside Tablet
 Center, in System Settings' Drawing Tablet page (any form but a
 keyboard shortcut), shows read-only with the tooltip "Set in System
-Settings > Drawing Tablet." Wacom Center reads the binding to display
+Settings > Drawing Tablet." Tablet Center reads the binding to display
 it, and never writes over a binding it does not own. A keyboard
 shortcut set there is an ordinary box you can edit.
 
@@ -364,10 +364,10 @@ can prepare a binding or a curve ahead of time.
 
 A profile is a full copy of the settings on the Precision, Pad
 buttons, and Pen tabs. Pie menus are not part of a profile. They live
-in Kando, a separate app, and Wacom Center does not read or write
+in Kando, a separate app, and Tablet Center does not read or write
 them.
 
-Profiles are `.wcprofile` files, plain text, split into sections:
+Profiles are `.tcprofile` files, plain text, split into sections:
 
 | Section | Holds |
 |---|---|
@@ -378,16 +378,16 @@ Profiles are `.wcprofile` files, plain text, split into sections:
 | `[Pressure]` | the pressure curve and range |
 | `[Image]` | the profile's picture, if it has one |
 
-Profiles live in `~/.local/share/wacom-center/profiles/`. Backups
-live in `~/.local/share/wacom-center/backup/`. Wacom Center writes
+Profiles live in `~/.local/share/tablet-center/profiles/`. Backups
+live in `~/.local/share/tablet-center/backup/`. Tablet Center writes
 one backup of a profile the first time that profile changes in a
-session, so you can undo the change. Wacom Center records which
+session, so you can undo the change. Tablet Center records which
 profile is active, and which profile sits in which grid cell, in
-`~/.local/share/wacom-center/profiles.ini`.
+`~/.local/share/tablet-center/profiles.ini`.
 
 Importing a profile is safe against a malformed or hand-edited file.
-Wacom Center checks every value against a strict format before it
-applies the value. Wacom Center drops a value that does not fit the
+Tablet Center checks every value against a strict format before it
+applies the value. Tablet Center drops a value that does not fit the
 format, does not apply it, and reports it in the tab's status line.
 
 The Profiles tab is the last tab. The button at the top opens a
@@ -409,7 +409,7 @@ Switching profiles applies the new `[Conf]`, `[Pad]`, `[Ring]`,
 mode by itself. A changed pen button, pie key, or pressure curve
 takes effect within about a second of the switch.
 
-One Wacom Center window can be open at a time. Opening a second one
+One Tablet Center window can be open at a time. Opening a second one
 brings the first one to the front instead.
 
 ## The ExpressKey touch preview and the area drag
@@ -417,7 +417,7 @@ brings the first one to the front instead.
 The Intuos Pro's pad keys report a resting finger before the press. The
 kernel does not expose it: the Bluetooth pad parser reads only the key,
 centre-button and ring bytes, and the `EXPRESSKEYCAP` HID usage has no
-mapping. `tablet-hover.py` reads the raw HID reports from every Wacom
+mapping. `tablet-hover.py` reads the raw HID reports from every tablet
 `/dev/hidraw*` node, next to the kernel driver. The udev rule from the
 install tags the nodes `uaccess` (USB `0003:056A:*`, Bluetooth
 `0005:056A:*`).
@@ -439,7 +439,7 @@ bit N-1, so key 8 is `0x80`.
 The M size is the one measured. S and L share the family, so the daemon
 uses the same layout for them.
 
-For a Wacom model the daemon does not know, run `tablet-pad-probe.py` once
+For a tablet model the daemon does not know, run `tablet-pad-probe.py` once
 per connection type. It prints each byte that changes, with the node, the
 bus and the report id. Put the values into `~/.config/tabprec.conf` as
 `HOVER_REPORT_USB`, `HOVER_BYTE_USB` and `PRESS_BYTE_USB`, and the same
@@ -449,13 +449,13 @@ Pro, Cintiq Pro, MobileStudio Pro). On other tablets the daemon idles.
 
 ### Defining the precision key
 
-The Precision column in Wacom Center's Pad buttons tab names the key. One
+The Precision column in Tablet Center's Pad buttons tab names the key. One
 key at most carries the tick. Apply writes that key's bit to the conf as
 `HOVER_MASK`, gives the key the toggle's global shortcut in `kcminputrc`,
 and removes the key's other chords. The row shows red flowing outlines:
 the mode consumes the Touch and Press fields, and the Pie tick has no
 effect there. No tick = no `HOVER_MASK` = the ghost and the drag are off.
-The daemon does not guess: if you bind the toggle outside Wacom Center,
+The daemon does not guess: if you bind the toggle outside Tablet Center,
 tick the key in the tab as well.
 
 ### Touch chords
@@ -546,7 +546,7 @@ their timing.
 
 The conf is `~/.config/tabprec.conf`. Every writer keeps the lines it does
 not own. The daemon re-reads it when a line arrives on its control pipe.
-Wacom Center pokes `$XDG_RUNTIME_DIR/tabprec/hover.ctl` after an Apply, a
+Tablet Center pokes `$XDG_RUNTIME_DIR/tabprec/hover.ctl` after an Apply, a
 touch-register change and a long-press change, the keys the daemon reads;
 the size, dim, reconnect and ring-step saves do not poke, because the toggle
 and the ring read the conf on every run, and a poke releases every held
@@ -558,17 +558,17 @@ The toggle reads the conf on every run and needs no poke.
 
 | Key | Meaning | Default | Written by |
 |---|---|---|---|
-| `SCALE` | area width as a fraction of the screen width, held inside the two limits below | 0.36 | Wacom Center, the ring |
-| `SCALE_MIN`, `SCALE_MAX` | the smallest and the largest `SCALE` the toggle, the ring and the size slider allow; 0 = no limit on that side (the area still ends at the full screen width and at one pixel); a smallest above the largest: the smallest wins, and Wacom Center shows a warning | 0.05, 0.80 | Wacom Center |
-| `DIM` | dim strength outside the area, 0 to 1 (1 = black) | 0.10 | Wacom Center |
+| `SCALE` | area width as a fraction of the screen width, held inside the two limits below | 0.36 | Tablet Center, the ring |
+| `SCALE_MIN`, `SCALE_MAX` | the smallest and the largest `SCALE` the toggle, the ring and the size slider allow; 0 = no limit on that side (the area still ends at the full screen width and at one pixel); a smallest above the largest: the smallest wins, and Tablet Center shows a warning | 0.05, 0.80 | Tablet Center |
+| `DIM` | dim strength outside the area, 0 to 1 (1 = black) | 0.10 | Tablet Center |
 | `HOLD` | the default touch register: seconds a resting finger waits before its touch action when the key has no `TOUCH_HOLD_<n>`, 0 = at once | 0.15 | you (a hand edit; the tab writes per-key values) |
-| `TOUCH_HOLD_<n>` | key n's own touch register | `HOLD` | Wacom Center (the Touch register column) |
-| `LONG` | seconds a press that confirmed a drag stays down to leave the mode, 0 = never | 0.7 | Wacom Center |
-| `RECONNECT` | seconds a paused mode waits for the tablet to come back, 0 = never | 60 | Wacom Center |
-| `RING_STEP` | percentage points of screen width per ring tick; 0 or absent = 0.5 | 0.5 | Wacom Center |
-| `HOVER_MASK` | the precision key's bit | none | Wacom Center (the Precision column) |
-| `CHORD_<n>` | the chord the daemon presses after the warp when pad key n goes down (a pie key; the key is `Disabled` in kcminputrc) | none | Wacom Center (a ticked Pie key) |
-| `TOUCH_CHORD_<n>` | the chord held while a finger rests on key n (see "Touch chords") | none | Wacom Center (the Touch box) |
+| `TOUCH_HOLD_<n>` | key n's own touch register | `HOLD` | Tablet Center (the Touch register column) |
+| `LONG` | seconds a press that confirmed a drag stays down to leave the mode, 0 = never | 0.7 | Tablet Center |
+| `RECONNECT` | seconds a paused mode waits for the tablet to come back, 0 = never | 60 | Tablet Center |
+| `RING_STEP` | percentage points of screen width per ring tick; 0 or absent = 0.5 | 0.5 | Tablet Center |
+| `HOVER_MASK` | the precision key's bit | none | Tablet Center (the Precision column) |
+| `CHORD_<n>` | the chord the daemon presses after the warp when pad key n goes down (a pie key; the key is `Disabled` in kcminputrc) | none | Tablet Center (a ticked Pie key) |
+| `TOUCH_CHORD_<n>` | the chord held while a finger rests on key n (see "Touch chords") | none | Tablet Center (the Touch box) |
 | `WARP` | `0` switches the mouse warp off; chords still fire | on | you |
 | `HOVER_REPORT_<BUS>`, `HOVER_BYTE_<BUS>`, `PRESS_BYTE_<BUS>`, `HOVER_MASK_<BUS>`, `PRESS_MASK_<BUS>` | report layout overrides for an unknown model, `<BUS>` = `USB` or `BT` | none | you, from the probe |
 
@@ -652,13 +652,13 @@ green.
 | Gate | What it checks |
 |---|---|
 | `py_compile`, `bash -n` | every Python file compiles, every shell script parses |
-| import smoke | `wacom_center.py` and `wacom_profiles.py` import offscreen (`QT_QPA_PLATFORM=offscreen`): a wrong import name cannot pass through `py_compile` |
+| import smoke | `tablet_center.py` and `tablet_profiles.py` import offscreen (`QT_QPA_PLATFORM=offscreen`): a wrong import name cannot pass through `py_compile` |
 | `tests/check_map.py` | every top-level def, function and mode has a chunk marker, every marker has a bullet in `PROJECT_MAP.md`, and every bullet names a marker; a source file's header stays at 2 comment lines |
 | `tests/test_script.sh` (69 checks) | the toggle: on, move, resize around the centre with the clamp, the size limits (the defaults, no limit, one pixel), suspend, resume, off, the run lock, and a heal that waits for the pen without holding that lock. The write-back: a bus switch and a logout while on leave the pen on the whole screen, a base that is not the whole screen is put back as itself, the ledger fallback when the write-back cannot be proved, OFF with the tablet switched off, and a pause that resumes at the same area within `RECONNECT` seconds. A stubbed `busctl` that keeps `outputArea` per product AND seeds a device that has just appeared from `kcminputrc`, the way KWin does |
 | `tests/test_size.sh` (24 checks) | the ring script: the step and the size limits, `RING_STEP` from the conf, resize only with the mode on, the preview only with it off, nothing while the marker is fresh, and 12 ticks at once stepping `SCALE` exactly 12 times without losing a conf line |
 | `tests/test_hover.py` (95 checks) | the daemon: a named pipe plays the pad, a fake pen, fake overlays, a fake toggle. The ghost, the drag, `waiting` and `solid`, a conf edit mid-rest, `HOLD` 0, the long press and what must not arm it, the heal that a node set starts, and the runtime dir and control pipe the daemon makes for itself at a fresh login, and the absence timer that pauses precision mode. A held touch chord and the ghost released when the tablet goes away, and a new heal when it returns. A chord held through a conf reload goes up at the reload, once. A node that refuses its first open is opened by a later rescan, and so is a node whose reads end under the same name. One heal at a time, and a failed heal is run again, 5 runs at most. A pen with no position yet, in the daemon's reader and in `tablet-pen-pos.py` (the pen node found by `BTN_TOOL_PEN`, then exit 1 without asking XWayland). Left-handed mode: both pen readers turn the kernel's position (the one-shot reader before `--mapped`, the daemon's warp before the area), the XWayland position stays as it is, and KWin is asked again only after a change |
 | `tests/test_profiles.py` (48 checks) | the profile library, Qt-free: a hostile profile (a shell payload in a value, an unknown key, a chord on the precision key, an oversized image, a 3 MB file that stops the switch with the live files untouched), the pie rule, the order of a switch's writes, owned conf keys kept, a 2026-09 fixture's round trip, the pressure writes with and without a connected pen, Left-handed mode written for both connections with nothing live while disconnected, and its state read from KWin first, the conf lock timeout, a missing active profile recreated, a ring tick between two saves (the ring script run from a scratch copy beside a no-op preview), profile names. The real `kreadconfig6` and `kwriteconfig6` on a scratch `kcminputrc`, logged by stubs, with a dead D-Bus address so `--notify` reaches no live session |
-| `tests/test_center.py` (7 checks) | Wacom Center offscreen, with the profile rig's stubs: the turned table (key 8's picture at the far right of the top row, the Precision tick at the far left), a shortcut typed in the top row landing on key 8 when turned and on key 1 when not, the Left-handed box turning the table in place (an edit not applied yet moves with its row) and writing both connections and the live property, the ring's mode-1 light turned to the upper right, a shortcut typed in a ring mode's "clockwise" box landing in the second field, and the default ring (the smaller chord first, Swap unticked) with an older binding read as Swap ticked |
+| `tests/test_center.py` (7 checks) | Tablet Center offscreen, with the profile rig's stubs: the turned table (key 8's picture at the far right of the top row, the Precision tick at the far left), a shortcut typed in the top row landing on key 8 when turned and on key 1 when not, the Left-handed box turning the table in place (an edit not applied yet moves with its row) and writing both connections and the live property, the ring's mode-1 light turned to the upper right, a shortcut typed in a ring mode's "clockwise" box landing in the second field, and the default ring (the smaller chord first, Swap unticked) with an older binding read as Swap ticked |
 
 Not part of the gate: `tests/add_markers.py` puts a chunk marker above every
 new def, function or mode (idempotent); `tests/check_map.py` imports its rule

@@ -1,5 +1,5 @@
 #!/bin/bash
-# uninstall.sh - remove plasma-wacom-center for the current user: the reverse of install.sh; safe to re-run.
+# uninstall.sh - remove plasma-tablet-center for the current user: the reverse of install.sh; safe to re-run.
 # Your settings are kept; the paths and the one sudo line are printed at the end.
 set -e
 BIN="$HOME/.local/bin"
@@ -36,7 +36,7 @@ echo "== 3/5 Removing the scripts from $BIN; the pen ledgers go to the Trash"
 for f in tablet-precision.sh tablet-precision-size.sh tablet-pen-pos.py \
          tablet-overlay.py tablet-overlay.qml tablet-size-preview.py \
          tablet-pointer-warp.py tablet-hover.py tablet-pad-probe.py \
-         wacom_center.py wacom_profiles.py tablet-pie.sh tablet-size-preview.qml; do
+         tablet_center.py tablet_profiles.py tablet-pie.sh tablet-size-preview.qml; do
     rm -f "$BIN/$f"                       # the last two: files older installs left behind
 done
 # The pen ledgers (tablet-precision.sh heal) go to the Trash, never deleted: a folder of records
@@ -46,6 +46,9 @@ if [ -e "$LEDGERS" ]; then
     gio trash "$LEDGERS" 2>/dev/null && echo "the pen ledgers: moved to the Trash" ||
         echo "the pen ledgers stay in $LEDGERS: move that folder to the Trash yourself"
 fi
+
+# An install from before the rename left these two files and this menu entry.
+rm -f "$BIN/wacom_center.py" "$BIN/wacom_profiles.py" "$APPS/wacom-center.desktop"   # keep-old-name
 
 echo "== 4/5 Removing the launcher entries and their shortcuts"
 for e in net.local.tabprec-toggle net.local.tabprec-bigger \
@@ -59,16 +62,17 @@ for e in net.local.tabprec-toggle net.local.tabprec-bigger \
     kwriteconfig6 --file kglobalshortcutsrc --group services --group "$e.desktop" --key _launch --delete 2>/dev/null || true
     kwriteconfig6 --file kglobalshortcutsrc --group services --group "$e.desktop" --key _k_friendly_name --delete 2>/dev/null || true
 done
-rm -f "$APPS/wacom-center.desktop" "$HOME/.config/autostart/tablet-hover.desktop"
+rm -f "$APPS/tablet-center.desktop" "$HOME/.config/autostart/tablet-hover.desktop"
 kbuildsycoca6 2>/dev/null || true
 
 echo "== 5/5 What stays (yours to keep or delete)"
 cat <<'EOF'
 
 - ~/.config/tabprec.conf                    your settings; delete it to forget them
-- ~/.local/share/wacom-center/              your Wacom Center profiles; delete it to forget them
+- ~/.local/share/tablet-center/              your Tablet Center profiles; delete it to forget them
+- ~/.local/share/wacom-center/               the profiles of the version before the rename, if you have it
 - the pad-key and ring entries in kcminputrc  what the pad keys send; clear them in
-                                            Wacom Center before uninstalling, or in
+                                            Tablet Center before uninstalling, or in
                                             System Settings -> Drawing Tablet after
 - the pen's screen mapping in kcminputrc    step 1 put it back. If the pen still
                                             reaches only a small part of the screen,

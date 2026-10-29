@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # tablet-size-preview.py - the centred, fading preview of the precision area size (a ring tick with precision mode off).
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import os
 import subprocess
 import sys
@@ -74,7 +74,7 @@ def read_conf():
 app = QGuiApplication(sys.argv)
 # app_id for a normal toplevel; inert here - tablet-overlay.qml is a layer-shell
 # surface, which carries none, so KWin reports the interpreter name instead.
-app.setDesktopFileName("wacom-center")
+app.setDesktopFileName("tablet-center")
 screen = app.primaryScreen().size()
 ASPECT = tablet_aspect()
 engine = QQmlApplicationEngine()

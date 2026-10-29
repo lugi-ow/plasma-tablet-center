@@ -10,6 +10,14 @@
 # Without $STUB_AREAS every read says 0 0 1 1.
 # $STUB_NO_PEN lists no pen at all (the tablet is gone).
 echo "busctl $*" >> "${STUB_LOG:-/dev/stderr}"
+if [ "$2" = call ]; then                     # kglobalaccel, for the package_setup rig
+    [ -n "${STUB_CALL_FAIL:-}" ] && exit 1   # every call refused
+    case "$6" in
+        getComponent) [ -n "${STUB_NO_COMPONENT:-}" ] && exit 1; echo "o \"/component/x\"" ;;
+        setShortcut)  [ -n "${STUB_KEY_TAKEN:-}" ] && echo "ai 0" || echo "ai 1 ${14}" ;;
+    esac
+    exit 0
+fi
 PRODUCT=${STUB_PRODUCT:-864}
 KEPT="${STUB_AREAS:+$STUB_AREAS/area-$PRODUCT}"
 if [ "$2" = "set-property" ] && [ "$6" = outputArea ] && [ -n "$KEPT" ]; then

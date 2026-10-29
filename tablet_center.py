@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# wacom_center.py - Wacom Center: one settings window (Precision, Pad buttons, Pen, Profiles).
-# Part of plasma-wacom-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
+# tablet_center.py - Tablet Center: one settings window (Precision, Pad buttons, Pen, Profiles).
+# Part of plasma-tablet-center (MIT). Structure and contracts: PROJECT_MAP.md; mechanisms: TECHNICAL.md.
 import base64
 import os
 import re
@@ -20,11 +20,11 @@ from PyQt6.QtWidgets import (QApplication, QBoxLayout, QCheckBox, QComboBox, QDi
                              QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
                              QWidgetAction)
 
-import wacom_profiles
+import tablet_profiles
 
 # ── chunk: paths
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tabprec.conf"
-TOGGLE = Path.home() / ".local/bin/tablet-precision.sh"
+TOGGLE = Path(__file__).resolve().parent / "tablet-precision.sh"   # beside this file: ~/.local/bin or the package folder
 MODIFIER_ONLY = {"Shift", "Control", "Ctrl", "Alt", "Meta"}
 RING_DEFAULT = ("Meta+Shift+F9", "Meta+Shift+F10", 600)   # up = counter-clockwise: smaller; down = clockwise: bigger; threshold = degrees x 120
 KW, MGR, IF = "org.kde.KWin", "/org/kde/KWin/InputDevice", "org.kde.KWin.InputDevice"
@@ -61,7 +61,7 @@ TOUCH_TIP = ("A touch chord is held while a finger RESTS on the key.\n"
              "the lift. Bare modifiers are allowed - Ctrl for Blender's\n"
              "sculpt - but not Meta alone (that is the launcher tap).\n"
              "A press within the register wins: no chord for that contact.\n"
-             "Needs Wacom keys with a touch sensor (Intuos Pro and kin).")
+             "Needs tablet keys with a touch sensor (Intuos Pro and kin).")
 RING_TIP = ("The shortcut for one turn direction.\n"
             "The mode with the two precision-size shortcuts controls the area size.\n"
             "The Precision tab sets that mode's tick angle and direction.\n"
@@ -100,7 +100,7 @@ def busget(path, prop):
 def detect_devices():
     """Return (pad_name, pen_name, pen_sysname, aspect) from KWin's live
     device list. Saves pad/pen into profiles.ini [Device] when found - the
-    asleep-pad and disconnected-pen fallback chains (wacom_profiles) read
+    asleep-pad and disconnected-pen fallback chains (tablet_profiles) read
     that but never write it, so a stale recorded name never re-saves itself."""
     pad_name, pen_name, pen_sysname, aspect = None, None, None, 1.6
     for sysname in busget(MGR, "devicesSysNames").replace('"', " ").split()[2:]:
@@ -118,7 +118,7 @@ def detect_devices():
                 if len(out) >= 2:
                     pen_name, pen_sysname = out[1], sysname
     if pad_name or pen_name:
-        wacom_profiles.save_device(pad_name, pen_name)
+        tablet_profiles.save_device(pad_name, pen_name)
     return pad_name, pen_name, pen_sysname, aspect
 
 
@@ -143,23 +143,23 @@ def read_conf():
 # ── chunk: save_conf_key
 def save_conf_key(key, value):
     """Set key=value in tabprec.conf under $RD/conf.lock, atomically (see
-    wacom_profiles). A lock not taken within 5 s writes NOTHING and raises -
+    tablet_profiles). A lock not taken within 5 s writes NOTHING and raises -
     the GUI shows "The settings file is busy. Try again." and a switch stops
     through its step-fails path."""
     try:
-        wacom_profiles.save_conf_key(key, value)
+        tablet_profiles.save_conf_key(key, value)
     except TimeoutError:
-        QMessageBox.warning(None, "Wacom Center", "The settings file is busy. Try again.")
+        QMessageBox.warning(None, "Custom Drawing Tablet Center", "The settings file is busy. Try again.")
         raise
 
 
 # ── chunk: drop_conf_key
 def drop_conf_key(key):
-    """Remove key from tabprec.conf, keeping every other line (see wacom_profiles)."""
+    """Remove key from tabprec.conf, keeping every other line (see tablet_profiles)."""
     try:
-        wacom_profiles.drop_conf_key(key)
+        tablet_profiles.drop_conf_key(key)
     except TimeoutError:
-        QMessageBox.warning(None, "Wacom Center", "The settings file is busy. Try again.")
+        QMessageBox.warning(None, "Custom Drawing Tablet Center", "The settings file is busy. Try again.")
         raise
 
 
@@ -180,7 +180,7 @@ def conf_value(key):
 def poke_daemon():
     """One line into the daemon's control pipe: re-read the conf now. False
     when no process reads the pipe (no daemon, or not open yet)."""
-    return wacom_profiles.poke_daemon()
+    return tablet_profiles.poke_daemon()
 
 
 # ── chunk: kread
@@ -189,9 +189,9 @@ def kread(pad, idx):
     box, Disabled, empty, or the full raw text of any other form (MouseButton,
     TabletToolButton, Scroll, ...) - the caller shows those read-only, never
     silently drops them (that used to delete the binding on Apply). The
-    toggle's shortcut and the daemon's chord alphabet come from wacom_profiles
+    toggle's shortcut and the daemon's chord alphabet come from tablet_profiles
     (toggle_chord, load_parse_chord): one copy of each."""
-    out = wacom_profiles.kreadconfig6(["ButtonRebinds", "Tablet", pad], str(idx))
+    out = tablet_profiles.kreadconfig6(["ButtonRebinds", "Tablet", pad], str(idx))
     return out.removeprefix("Key,") if out.startswith("Key,") else out
 
 
@@ -221,7 +221,7 @@ def kwrite(pad, idx, seq):
 def kread_group(groups, key):
     """Like kread, for an arbitrary kcminputrc group path (the Pen tab's
     [ButtonRebinds][TabletTool][<pen>])."""
-    out = wacom_profiles.kreadconfig6(groups, str(key))
+    out = tablet_profiles.kreadconfig6(groups, str(key))
     return out.removeprefix("Key,") if out.startswith("Key,") else out
 
 
@@ -243,7 +243,7 @@ def ring_read(pad, mode=0):
     in kcminputrc (KWin groups 0-3), or None when that mode is unbound.
     KWin stores degrees x 120."""
     if pad:
-        out = wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", pad, str(mode)], "0").split(",")
+        out = tablet_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", pad, str(mode)], "0").split(",")
         if len(out) == 4 and out[0] == "AxisKey":
             try:
                 return out[1], out[2], int(out[3]) / 120
@@ -397,8 +397,8 @@ class PrecisionTab(QWidget):
         tick_row.addWidget(self.ring_swap)
         tick_row.addStretch()
         toggle = QPushButton("Toggle precision now")
-        toggle.clicked.connect(lambda: subprocess.Popen([str(TOGGLE)]))
-        toggle.setToolTip(f"The pad key bound to {wacom_profiles.toggle_chord()} does the same. Size and dim "
+        toggle.clicked.connect(lambda: subprocess.Popen(["bash", str(TOGGLE)]))   # bash: a checkout may lack the x bit
+        toggle.setToolTip(f"The pad key bound to {tablet_profiles.toggle_chord()} does the same. Size and dim "
                           "apply on the next toggle or ring tick, the long-press time at once, the "
                           "reconnect time at the next disconnect, the ring step at the next tick.")
 
@@ -720,7 +720,7 @@ class PadTab(QWidget):
         super().__init__()
         self.pad = pad
         self.pen, self.sysname = pen, sysname     # the post-Apply checkpoint() and the Left-handed box
-        self.parse = wacom_profiles.load_parse_chord()
+        self.parse = tablet_profiles.load_parse_chord()
         self._prm_last = None
         self.dirty = False          # a switch asks Apply/Discard/Cancel while this is set
         outer = QVBoxLayout(self)
@@ -733,7 +733,7 @@ class PadTab(QWidget):
             outer.addWidget(note)
             outer.addStretch()                       # the lines stay at the top of the page
             return
-        self.turned = wacom_profiles.left_handed_state(pen, sysname)
+        self.turned = tablet_profiles.left_handed_state(pen, sysname)
         self.left = QCheckBox("Left-handed: the tablet turned around, the keys on the right")
         self.left.setToolTip(LEFT_TIP)
         self.left.setChecked(self.turned)
@@ -838,7 +838,7 @@ class PadTab(QWidget):
                 pair.addWidget(turn)
                 boxes.append(turn)
             bound = ring_read(pad, mode)
-            raw = wacom_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", pad, str(mode)], "0")
+            raw = tablet_profiles.kreadconfig6(["ButtonRebinds", "TabletRing", pad, str(mode)], "0")
             if bound:
                 boxes[0].setText(bound[0])
                 boxes[1].setText(bound[1])
@@ -924,25 +924,25 @@ class PadTab(QWidget):
             sysname = detect_devices()[2]            # a bus switch renumbers the pen: never a stale node
         notes = []
         try:
-            wacom_profiles.apply_left_handed(on, self.pen, sysname, notes.append)
+            tablet_profiles.apply_left_handed(on, self.pen, sysname, notes.append)
         except RuntimeError as err:                  # kwriteconfig6 refused: the box goes back
             self.left.blockSignals(True)
             self.left.setChecked(not on)
             self.left.blockSignals(False)
-            QMessageBox.warning(self, "Wacom Center", f"Left-handed mode was not saved.\n{err}")
+            QMessageBox.warning(self, "Custom Drawing Tablet Center", f"Left-handed mode was not saved.\n{err}")
             return
         self.sysname = sysname or self.sysname
         self.turned = on
         self._place()
         if notes:
-            QMessageBox.information(self, "Wacom Center", "\n".join(notes))
+            QMessageBox.information(self, "Custom Drawing Tablet Center", "\n".join(notes))
 
     def confirm_switch(self):
         """A switch asks Apply, Discard or Cancel when this tab has edits not
         applied; True = go on with the switch."""
         if not self.dirty:
             return True
-        box = QMessageBox(QMessageBox.Icon.Question, "Wacom Center",
+        box = QMessageBox(QMessageBox.Icon.Question, "Custom Drawing Tablet Center",
                           "The Pad buttons tab has changes that have not been applied.",
                           QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Discard
                           | QMessageBox.StandardButton.Cancel, self)
@@ -1014,7 +1014,7 @@ class PadTab(QWidget):
         ticked pie side's box. The register field stays plain - the
         precision key uses it too (the drag hold)."""
         m = self.prm_row()
-        tc = wacom_profiles.toggle_chord()           # one read per restyle, not one per row
+        tc = tablet_profiles.toggle_chord()           # one read per restyle, not one per row
         for idx in range(8):
             red = idx == m
             self.touches[idx].set_ants(red or self.tp[idx].isChecked(),
@@ -1065,7 +1065,7 @@ class PadTab(QWidget):
                     self.touches[idx].setText("")
                     self.tp[idx].setChecked(False)
                     self.pp[idx].setChecked(False)
-                kwrite(self.pad, idx, wacom_profiles.toggle_chord())
+                kwrite(self.pad, idx, tablet_profiles.toggle_chord())
                 drop_conf_key(f"CHORD_{n}")
                 drop_conf_key(f"TOUCH_CHORD_{n}")
                 continue
@@ -1087,7 +1087,7 @@ class PadTab(QWidget):
                     problems.append(f"Key {n}: its binding is set in System Settings > Drawing Tablet. "
                                     "Clear it there to use a pie on this key.")
                 if kread(self.pad, idx) != press:    # the precision tick left this row: its binding back
-                    wacom_profiles.kwrite_literal(["ButtonRebinds", "Tablet", self.pad], str(idx), press)
+                    tablet_profiles.kwrite_literal(["ButtonRebinds", "Tablet", self.pad], str(idx), press)
                 drop_conf_key(f"CHORD_{n}")
                 continue
             press_ok = bool(press) and (self.parse is None or self.parse(press) is not None)
@@ -1127,15 +1127,15 @@ class PadTab(QWidget):
             kept = ring_read(self.pad, mode)
             ring_write(self.pad, chords[0], chords[1], kept[2] if kept else 5, mode)
         if not poke_daemon():
-            problems.append(wacom_profiles.DAEMON_DOWN)
-        wacom_profiles.checkpoint(self.pad, self.pen, self.sysname)
+            problems.append(tablet_profiles.DAEMON_DOWN)
+        tablet_profiles.checkpoint(self.pad, self.pen, self.sysname)
         for idx in range(8):
             if idx != m:
                 self._load_row(idx)                  # what is on disk now, kept sides included
         self.dirty = False
         self.restyle()
         if problems:
-            QMessageBox.warning(self, "Wacom Center", "\n".join(problems))
+            QMessageBox.warning(self, "Custom Drawing Tablet Center", "\n".join(problems))
 
 
 # ── chunk: _parse_curve
@@ -1155,11 +1155,11 @@ def _parse_curve(text):
 def _read_pressure_group(pen):
     """(curve, rmin, rmax) raw strings from the first kcminputrc [Libinput]
     group for this pen, or (None, None, None)."""
-    for vendor, product in wacom_profiles.pen_groups_in_kcminputrc(pen):
-        curve = wacom_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureCurve")
+    for vendor, product in tablet_profiles.pen_groups_in_kcminputrc(pen):
+        curve = tablet_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureCurve")
         if curve:
-            rmin = wacom_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureRangeMin")
-            rmax = wacom_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureRangeMax")
+            rmin = tablet_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureRangeMin")
+            rmax = tablet_profiles.kreadconfig6(["Libinput", vendor, product, pen], "TabletToolPressureRangeMax")
             return curve, rmin, rmax
     return None, None, None
 
@@ -1245,7 +1245,7 @@ class PenTab(QWidget):
     """Pen buttons (evdev codes 331/332/329) in kcminputrc
     [ButtonRebinds][TabletTool][<pen>], the pressure curve (the interactive
     graph plus 4 synced spin boxes) and the pressure range, all through
-    wacom_profiles.apply_pressure - one Qt-free write path the switch
+    tablet_profiles.apply_pressure - one Qt-free write path the switch
     reuses too."""
     CODES = (331, 332, 329)
     LABELS = ("Pen button 1", "Pen button 2", "Pen button 3")
@@ -1373,7 +1373,7 @@ class PenTab(QWidget):
         applied; True = go on with the switch."""
         if not self.dirty:
             return True
-        box = QMessageBox(QMessageBox.Icon.Question, "Wacom Center",
+        box = QMessageBox(QMessageBox.Icon.Question, "Custom Drawing Tablet Center",
                           "The Pen tab has changes that have not been applied.",
                           QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Discard
                           | QMessageBox.StandardButton.Cancel, self)
@@ -1447,20 +1447,20 @@ class PenTab(QWidget):
         curve = (f"{self.p1x.value():.4f},{self.p1y.value():.4f};"
                 f"{self.p2x.value():.4f},{self.p2y.value():.4f};")
         notes = []
-        wacom_profiles.apply_pressure(curve, self.rmin.value(), self.rmax.value(), self.pen,
+        tablet_profiles.apply_pressure(curve, self.rmin.value(), self.rmax.value(), self.pen,
                                       self.sysname, status=notes.append)
-        wacom_profiles.checkpoint(self.pad, self.pen, self.sysname)
+        tablet_profiles.checkpoint(self.pad, self.pen, self.sysname)
         self.dirty = False
         problems.extend(notes)
         if problems:
-            QMessageBox.information(self, "Wacom Center", "\n".join(problems))
+            QMessageBox.information(self, "Custom Drawing Tablet Center", "\n".join(problems))
 
 
 # ── chunk: ProfilesTab
 class ProfilesTab(QWidget):
     """The profile menu + `+` import, the 3x3 grid (Edit Grid opens the cell
     dialog), Export All, and the status line. Every switch goes through
-    wacom_profiles.switch_to after asking the other tabs to confirm."""
+    tablet_profiles.switch_to after asking the other tabs to confirm."""
     switched = pyqtSignal(str)
 
     def __init__(self, pad, pen, sysname, precision_tab, pad_tab, pen_tab):
@@ -1525,8 +1525,8 @@ class ProfilesTab(QWidget):
         if not name:
             return QIcon()
         try:
-            sections, _ = wacom_profiles.read_profile(wacom_profiles.profile_path(name))
-        except wacom_profiles.ProfileError:
+            sections, _ = tablet_profiles.read_profile(tablet_profiles.profile_path(name))
+        except tablet_profiles.ProfileError:
             return QIcon()
         png = sections["Image"]["png"]
         if not png:
@@ -1538,8 +1538,8 @@ class ProfilesTab(QWidget):
         return QIcon(pix)
 
     def refresh(self):
-        active = wacom_profiles.active_profile_name() or ""
-        names = wacom_profiles.list_profiles()
+        active = tablet_profiles.active_profile_name() or ""
+        names = tablet_profiles.list_profiles()
         self.menu_btn.setText(elided(self.menu_btn, active, 240) if active else "(no profile)")
         self.menu_btn.setToolTip(active)
         self.menu_btn.setIcon(self._icon_for(active, 24))
@@ -1576,7 +1576,7 @@ class ProfilesTab(QWidget):
         if old_menu is not None:
             old_menu.deleteLater()
 
-        cell_names = wacom_profiles.get_grid()
+        cell_names = tablet_profiles.get_grid()
         for i, btn in enumerate(self.grid_cells):
             name = cell_names[i] if i < len(cell_names) else ""
             btn.setText(elided(btn, name, 84))          # a 96 px cell: centred text lost both ends
@@ -1594,12 +1594,12 @@ class ProfilesTab(QWidget):
                 btn.setStyleSheet("QToolButton:focus { border: 2px solid palette(highlight); }")
 
     def cell_clicked(self, n):
-        cell_names = wacom_profiles.get_grid()
+        cell_names = tablet_profiles.get_grid()
         name = cell_names[n - 1] if n - 1 < len(cell_names) else ""
         if self.edit_grid.isChecked() or not name:
             self.open_cell_dialog(n, name)
             return
-        if name == wacom_profiles.active_profile_name():
+        if name == tablet_profiles.active_profile_name():
             return                          # the active cell does nothing
         self.request_switch(name)
 
@@ -1609,7 +1609,7 @@ class ProfilesTab(QWidget):
         v = QVBoxLayout(dlg)
         combo = QComboBox()
         combo.addItem("Empty")
-        names = wacom_profiles.list_profiles()
+        names = tablet_profiles.list_profiles()
         combo.addItems(names)
         if current_name and current_name in names:
             combo.setCurrentText(current_name)
@@ -1624,8 +1624,8 @@ class ProfilesTab(QWidget):
             if not name or name == "Empty":
                 return
             try:
-                sections, _ = wacom_profiles.read_profile(wacom_profiles.profile_path(name))
-            except wacom_profiles.ProfileError:
+                sections, _ = tablet_profiles.read_profile(tablet_profiles.profile_path(name))
+            except tablet_profiles.ProfileError:
                 return
             png = sections["Image"]["png"]
             if png:
@@ -1647,11 +1647,11 @@ class ProfilesTab(QWidget):
             reader = QImageReader(path)
             size = reader.size()
             if size.width() > 16000 or size.height() > 16000:
-                QMessageBox.warning(dlg, "Wacom Center", "That image is too large.")
+                QMessageBox.warning(dlg, "Custom Drawing Tablet Center", "That image is too large.")
                 return
             img = reader.read()
             if img.isNull():
-                QMessageBox.warning(dlg, "Wacom Center", "That file could not be read as an image.")
+                QMessageBox.warning(dlg, "Custom Drawing Tablet Center", "That file could not be read as an image.")
                 return
             scaled = img.scaled(256, 256, Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation)
@@ -1659,20 +1659,20 @@ class ProfilesTab(QWidget):
             buf.open(QIODevice.OpenModeFlag.WriteOnly)
             scaled.save(buf, "PNG")
             png_b64 = base64.b64encode(bytes(buf.data())).decode("ascii")
-            wacom_profiles.backup_now(name)
-            sections, _ = wacom_profiles.read_profile(wacom_profiles.profile_path(name))
+            tablet_profiles.backup_now(name)
+            sections, _ = tablet_profiles.read_profile(tablet_profiles.profile_path(name))
             sections["Image"]["png"] = png_b64
-            wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
             load_preview(name)
 
         def remove_image():
             name = combo.currentText()
             if name == "Empty":
                 return
-            wacom_profiles.backup_now(name)
-            sections, _ = wacom_profiles.read_profile(wacom_profiles.profile_path(name))
+            tablet_profiles.backup_now(name)
+            sections, _ = tablet_profiles.read_profile(tablet_profiles.profile_path(name))
             sections["Image"]["png"] = ""
-            wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
             load_preview(name)
 
         btn_row = QHBoxLayout()
@@ -1690,7 +1690,7 @@ class ProfilesTab(QWidget):
         v.addWidget(buttons)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             chosen = combo.currentText()
-            wacom_profiles.set_grid_cell(n, "" if chosen == "Empty" else chosen)
+            tablet_profiles.set_grid_cell(n, "" if chosen == "Empty" else chosen)
         self.refresh()                                  # an image chosen, then Cancel: the profile on disk changed anyway
 
     def _confirm_unapplied(self):
@@ -1704,9 +1704,9 @@ class ProfilesTab(QWidget):
             return
         msgs = []                                       # every note of the switch, shown together at the end:
         try:                                            # a final "Switched" line used to cover the daemon warning
-            wacom_profiles.switch_to(name, pad=self.pad, pen=self.pen,
+            tablet_profiles.switch_to(name, pad=self.pad, pen=self.pen,
                                      sysname=self.sysname, status=msgs.append)
-        except wacom_profiles.SwitchStopped as err:
+        except tablet_profiles.SwitchStopped as err:
             self.note("\n".join(msgs + [str(err)]))
             return
         self.note("\n".join([f"Switched to {name}."] + msgs))
@@ -1715,7 +1715,7 @@ class ProfilesTab(QWidget):
 
     def _ask_clash(self, name, replace_label, keep_both=True):
         box = QMessageBox(self)
-        box.setWindowTitle("Wacom Center")
+        box.setWindowTitle("Custom Drawing Tablet Center")
         box.setText(f"'{name}' already exists.")
         replace_btn = box.addButton(replace_label, QMessageBox.ButtonRole.AcceptRole)
         keep_btn = box.addButton("Keep Both", QMessageBox.ButtonRole.ActionRole) if keep_both else None
@@ -1730,44 +1730,44 @@ class ProfilesTab(QWidget):
 
     def import_from_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Add Profile from File", str(Path.home() / "Documents"),
-                                              "Wacom Center profiles (*.wcprofile)")
+                                              "Tablet Center profiles (*.tcprofile *.wcprofile)")  # keep-old-name
         if not path:
             return
         try:
-            sections, warnings = wacom_profiles.read_profile(path)
-        except wacom_profiles.ProfileError as err:
+            sections, warnings = tablet_profiles.read_profile(path)
+        except tablet_profiles.ProfileError as err:
             self.note(str(err))
             return
         if warnings:
             self.note("\n".join(warnings))
         try:
-            name = wacom_profiles.valid_name(Path(path).stem)
+            name = tablet_profiles.valid_name(Path(path).stem)
         except ValueError as err:
             self.note(str(err))
             return
-        existing = name in wacom_profiles.list_profiles()
-        active = wacom_profiles.active_profile_name()
+        existing = name in tablet_profiles.list_profiles()
+        active = tablet_profiles.active_profile_name()
         if not existing:
-            wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
             self.refresh()
             return
         choice = self._ask_clash(name, "Replace and Apply" if name == active else "Replace")
         if choice == "cancel":
             return
         if choice == "keep_both":
-            name = wacom_profiles.unique_name(name)
-            wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            name = tablet_profiles.unique_name(name)
+            tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
         else:
             if name == active and not self._confirm_unapplied():
                 return                                  # asked BEFORE the file is replaced: Cancel leaves it as it was
-            wacom_profiles.backup_now(name)
-            wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            tablet_profiles.backup_now(name)
+            tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
             if name == active:
                 msgs = []
                 try:
-                    wacom_profiles.switch_to(name, checkpoint_=False, pad=self.pad, pen=self.pen,
+                    tablet_profiles.switch_to(name, checkpoint_=False, pad=self.pad, pen=self.pen,
                                              sysname=self.sysname, status=msgs.append)
-                except wacom_profiles.SwitchStopped as err:
+                except tablet_profiles.SwitchStopped as err:
                     self.note("\n".join(msgs + [str(err)]))
                     self.refresh()
                     return
@@ -1778,30 +1778,30 @@ class ProfilesTab(QWidget):
     def export_all(self):
         if not self._confirm_unapplied():
             return                                      # the export is the LIVE values: edits not applied would be missing
-        wacom_profiles.checkpoint(self.pad, self.pen, self.sysname)
-        active = wacom_profiles.active_profile_name() or "My settings"
-        default = str(Path.home() / "Documents" / f"{active}.wcprofile")
+        tablet_profiles.checkpoint(self.pad, self.pen, self.sysname)
+        active = tablet_profiles.active_profile_name() or "My settings"
+        default = str(Path.home() / "Documents" / f"{active}.tcprofile")
         path, _ = QFileDialog.getSaveFileName(self, "Export All Current Settings as Profile", default,
-                                              "Wacom Center profiles (*.wcprofile)")
+                                              "Tablet Center profiles (*.tcprofile)")
         if not path:
             return
         try:
-            name = wacom_profiles.valid_name(Path(path).stem)
+            name = tablet_profiles.valid_name(Path(path).stem)
         except ValueError as err:
             self.note(str(err))
             return
-        sections, _ = wacom_profiles.read_profile(wacom_profiles.profile_path(active))
-        if name != active and name in wacom_profiles.list_profiles():
+        sections, _ = tablet_profiles.read_profile(tablet_profiles.profile_path(active))
+        if name != active and name in tablet_profiles.list_profiles():
             choice = self._ask_clash(name, "Replace", keep_both=False)
             if choice == "cancel":
                 return
-            wacom_profiles.backup_now(name)
-        wacom_profiles.write_profile(Path(path), sections)
-        wacom_profiles.write_profile(wacom_profiles.profile_path(name), sections)
+            tablet_profiles.backup_now(name)
+        tablet_profiles.write_profile(Path(path), sections)
+        tablet_profiles.write_profile(tablet_profiles.profile_path(name), sections)
         if name == active:
             self.note(f"Exported and updated the library copy of {name!r}.")
         else:
-            wacom_profiles.set_active_profile(name)
+            tablet_profiles.set_active_profile(name)
             self.note(f"Exported and made {name!r} the active profile.")
             self.switched.emit(name)
         self.refresh()
@@ -1814,7 +1814,7 @@ def show_exception(kind, value, tb):
     a slot left a click half done with no sign: the traceback still goes to
     stderr, and a dialog says what stopped."""
     traceback.print_exception(kind, value, tb)
-    QMessageBox.warning(None, "Wacom Center", f"{kind.__name__}: {value}")
+    QMessageBox.warning(None, "Custom Drawing Tablet Center", f"{kind.__name__}: {value}")
 
 
 # ── chunk: CenterWindow
@@ -1839,29 +1839,42 @@ class CenterWindow(QWidget):
 # ── chunk: main
 def main():
     app = QApplication(sys.argv)
-    app.setDesktopFileName("wacom-center")   # the Wayland app_id KWin reports; without it, the interpreter name
+    app.setDesktopFileName("tablet-center")   # the Wayland app_id KWin reports; without it, the interpreter name
     app.setWindowIcon(QIcon.fromTheme("input-tablet"))
 
     # ── chunk: single_instance
     probe = QLocalSocket()
-    probe.connectToServer("wacom-center")
-    if probe.waitForConnected(200):          # one Wacom Center at a time: raise the first window and exit
+    probe.connectToServer("tablet-center")
+    if probe.waitForConnected(200):          # one Tablet Center at a time: raise the first window and exit
         probe.write(b"raise")
         probe.waitForBytesWritten(200)
         sys.exit(0)
-    QLocalServer.removeServer("wacom-center")   # a stale socket from a crashed run
+    QLocalServer.removeServer("tablet-center")   # a stale socket from a crashed run
     server = QLocalServer()
-    server.listen("wacom-center")
+    server.listen("tablet-center")
 
+    moved_notes = tablet_profiles.migrate_old_data()   # before anything reads profiles.ini: the previous version's folder
     live_pad, live_pen, sysname, aspect = detect_devices()
-    pad = wacom_profiles.resolve_pad_name(live_pad)
-    pen = wacom_profiles.resolve_pen_name(live_pen)
-    wacom_profiles.checkpoint(pad, pen, sysname)     # runs at window open
-    active = wacom_profiles.active_profile_name() or "My settings"
+    pad = tablet_profiles.resolve_pad_name(live_pad)
+    pen = tablet_profiles.resolve_pen_name(live_pen)
+    tablet_profiles.checkpoint(pad, pen, sysname)     # runs at window open
+    active = tablet_profiles.active_profile_name() or "My settings"
+
+    # ── chunk: package_first_start
+    first, notes = tablet_profiles.package_setup()  # the .deb copy's per-user steps; a no-op anywhere else
+    notes = moved_notes + notes
+    if first and live_pad and not any(ring_read(pad, m) for m in range(4)):   # install.sh's ring question
+        if QMessageBox.question(
+                None, "Custom Drawing Tablet Center", f'Bind the touch ring of "{pad}" (mode 1) to the precision '
+                "area size?\nClockwise makes the area bigger.") == QMessageBox.StandardButton.Yes:
+            ring_write(pad, RING_DEFAULT[0], RING_DEFAULT[1], RING_DEFAULT[2] / 120)
+            notes.append("Ring bound: set its step, angle and direction in the Precision tab.")
+    if notes:
+        QMessageBox.information(None, "Custom Drawing Tablet Center", "\n".join(notes))
 
     state = {}          # precision_tab, pad_tab, pen_tab, profiles_tab - filled by build_tabs()
     win = CenterWindow(state)
-    win.setWindowTitle(f"Wacom Center — {active}")
+    win.setWindowTitle(f"Custom Drawing Tablet Center — {active}")
     server.newConnection.connect(
         lambda: (win.showNormal(), win.raise_(), win.activateWindow(),
                  server.nextPendingConnection().disconnectFromServer()))
@@ -1873,8 +1886,8 @@ def main():
         if "precision_tab" in state:
             state["precision_tab"].flush_pending()   # its debounce timers must not fire into a freed widget
         d_pad, d_pen, d_sysname, d_aspect = detect_devices()
-        r_pad = wacom_profiles.resolve_pad_name(d_pad)
-        r_pen = wacom_profiles.resolve_pen_name(d_pen)
+        r_pad = tablet_profiles.resolve_pad_name(d_pad)
+        r_pen = tablet_profiles.resolve_pen_name(d_pen)
         precision_tab = PrecisionTab(d_aspect, r_pad)
         pad_tab = PadTab(r_pad, asleep=bool(r_pad and not d_pad), pen=r_pen, sysname=d_sysname)
         pen_tab = PenTab(r_pad, r_pen, d_sysname)
@@ -1887,7 +1900,7 @@ def main():
         else:
             profiles_tab = ProfilesTab(r_pad, r_pen, d_sysname, precision_tab, pad_tab, pen_tab)
             profiles_tab.switched.connect(lambda _name: build_tabs(select=tabs.currentIndex()))
-        name = wacom_profiles.active_profile_name() or "My settings"
+        name = tablet_profiles.active_profile_name() or "My settings"
         for tab in (precision_tab, pad_tab, pen_tab):
             tab.set_profile(name)
         while tabs.count():
@@ -1899,7 +1912,7 @@ def main():
         tabs.addTab(pen_tab, "Pen")
         tabs.addTab(profiles_tab, "Profiles")
         tabs.setCurrentIndex(select)
-        win.setWindowTitle(f"Wacom Center — {name}")
+        win.setWindowTitle(f"Custom Drawing Tablet Center — {name}")
         state.update(precision_tab=precision_tab, pad_tab=pad_tab, pen_tab=pen_tab,
                      profiles_tab=profiles_tab)
 
@@ -1918,7 +1931,7 @@ def main():
 
     def on_quit():
         state["precision_tab"].flush_pending()
-        wacom_profiles.checkpoint(state["pad_tab"].pad, state["pen_tab"].pen, state["pen_tab"].sysname)
+        tablet_profiles.checkpoint(state["pad_tab"].pad, state["pen_tab"].pen, state["pen_tab"].sysname)
 
     app.aboutToQuit.connect(on_quit)         # fires on window close and at logout; the close question
     sys.excepthook = show_exception          # itself lives in CenterWindow.closeEvent

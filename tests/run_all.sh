@@ -1,12 +1,13 @@
 #!/bin/bash
 # tests/run_all.sh - every gate in one go: compile every Python file,
 # syntax-check every shell script, the map gate (tests/check_map.py), then the
-# five rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
+# six rigs - test_script.sh (the toggle with a stubbed busctl, a fake pen
 # reader and a fake overlay), test_size.sh (the ring script with a stub toggle
 # and a fake preview), test_hover.py (the daemon with a named pipe as the
 # pad, a fake pen, fake overlays and a fake toggle), test_profiles.py
-# (wacom_profiles.py, Qt-free, with stubbed kreadconfig6/kwriteconfig6/qdbus6
-# wrapping the real binaries) and test_center.py (the Pad buttons tab offscreen,
+# (tablet_profiles.py, Qt-free, with stubbed kreadconfig6/kwriteconfig6/qdbus6
+# wrapping the real binaries), test_install.sh (packaging/build-deb.sh's .deb
+# unpacked into a scratch root, its first start on a scratch HOME) and test_center.py (the Pad buttons tab offscreen,
 # skipped without PyQt6 like the import smoke). Run from anywhere; needs python3
 # and bash - no tablet, no KWin, no window. Exit 0 = all green.
 set -o pipefail
@@ -23,7 +24,7 @@ if python3 -c "import PyQt6" 2>/dev/null; then
   mkdir -p "$S/imp" && QT_QPA_PLATFORM=offscreen XDG_CONFIG_HOME="$S/imp" \
   XDG_DATA_HOME="$S/imp" XDG_RUNTIME_DIR="$S/imp" python3 -c "
 import importlib.util
-for n in ('wacom_profiles', 'wacom_center'):
+for n in ('tablet_profiles', 'tablet_center'):
     s = importlib.util.spec_from_file_location(n, n + '.py')
     m = importlib.util.module_from_spec(s)
     s.loader.exec_module(m)
@@ -32,7 +33,7 @@ else
   echo "PyQt6 absent - skipped"
 fi
 echo "== bash -n"
-for f in *.sh tests/*.sh; do bash -n "$f" || red=1; done
+for f in *.sh tests/*.sh packaging/*.sh; do bash -n "$f" || red=1; done
 echo "== map"
 python3 tests/check_map.py || red=1
 echo "== toggle rig"
@@ -43,6 +44,10 @@ echo "== hover rig"
 python3 tests/test_hover.py "$S" "$PWD/tablet-hover.py" 2>/dev/null | grep -E '^(FAIL|failures)' || red=1
 echo "== profiles rig"
 python3 tests/test_profiles.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== transition rig"
+python3 tests/test_transition.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1
+echo "== install rig"
+bash tests/test_install.sh "$S" 2>&1 | grep -E '^(FAIL|failures)' || red=1
 echo "== center rig"
 if python3 -c "import PyQt6" 2>/dev/null; then
   python3 tests/test_center.py "$S" "$PWD" 2>&1 | grep -E '^(FAIL|failures)' || red=1

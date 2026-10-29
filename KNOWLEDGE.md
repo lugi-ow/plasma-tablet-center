@@ -1,6 +1,6 @@
 # The knowledge (why these scripts look the way they do)
 
-Companion to the plasma-wacom-center README.
+Companion to the plasma-tablet-center README.
 
 Hard-won facts, each of which cost a debugging session. If you build your own
 tablet tooling on Plasma Wayland, read this first.
@@ -60,7 +60,7 @@ file is never written.
 decides what to do cannot switch off once the device is gone, and a tablet
 switched off while precision mode is on is an ordinary evening, not an edge
 case. On 2026-09-12 the rectangle stayed on the screen after the tablet was
-switched off, and the pad key, the keyboard shortcut and Wacom Center all
+switched off, and the pad key, the keyboard shortcut and Tablet Center all
 failed the same way, because all three ran the same lookup first. Ending the
 mode needs only its own state. Restoring the live mapping needs the device,
 but once the file already names the base, KWin does that by itself on the
@@ -98,7 +98,7 @@ Intuos Pro ring reports 5-degree steps, so any threshold up to 600 fires on
 every step (72 ticks per turn) and 1800 fires every 15 degrees. An earlier
 version of this note said 120 was 5 degrees and 360 was 15; it was wrong.
 KWin fires the up chord on a counter-clockwise turn and the down chord on a
-clockwise turn (an Intuos Pro M, October 2026). Wacom Center labelled the
+clockwise turn (an Intuos Pro M, October 2026). Tablet Center labelled the
 two boxes the other way round until then.
 
 **The pen's screen position is not exposed to scripts.** KWin's scripting
@@ -118,7 +118,7 @@ the hardware, 2026-09-12); both readers now treat that state as no position
 at all (`OUT_OF_RANGE`) and fall back to the mouse. `tablet-pen-pos.py`
 finds the pen node by that same key bit in `/proc/bus/input/devices`,
 never by a bare name substring: "pen" is also in "Suspend". (The daemon's
-own reader matches the end of a Wacom device name, `Pen"`, which that
+own reader matches the end of a tablet device name, `Pen"`, which that
 trap does not reach.)
 
 **Left-handed mode turns the tablet in libinput, never in the kernel.**
@@ -132,7 +132,7 @@ raw, it put the area, the previews and the mouse warp on the opposite side
 of the screen; turn the reading the same way (`1 - x`, `1 - y`). More facts
 from the same sources. libinput applies a change only while the pen is out
 of proximity, so it starts at the next lift. KWin stores the setting per
-product id, so the USB and the Bluetooth connection keep one each (Wacom
+product id, so the USB and the Bluetooth connection keep one each (Tablet
 Center's box writes both, like the pressure curve). libinput also turns the
 pen when the tablet's touch surface has its own Left-handed mode on, and
 the pen's `leftHanded` then stays false. The pad keeps its button numbers,
@@ -205,7 +205,7 @@ size. Positions read while the monitor sleeps live in a space that does not
 exist. (Plasma 6.6, September 2026.)
 
 **The kernel does not expose the ExpressKey touch sense.** The Intuos Pro's
-keys report a resting finger before the press - Wacom's "Express View".
+keys report a resting finger before the press - the vendor's "Express View".
 The kernel's Bluetooth pad parser (`wacom_intuos_pro2_bt_pad`) reads only
 bytes 281, 282 and 285 of report 0x80 (keys, centre button, ring), and the
 `EXPRESSKEYCAP` HID usage has no mapping. The only way to get it is to read
@@ -230,7 +230,7 @@ tablet ended the connection, not the computer. The tablet sent no HID
 report between the connect and the disconnect. In use, the same tablet
 stayed connected for 33 minutes. The toolkit opens every tablet node
 read-only, and BlueZ's `IdleTimeout` in `/etc/bluetooth/input.conf` stays
-at 0, which means no timeout. The timer is in the tablet, and Wacom does
+at 0, which means no timeout. The timer is in the tablet, and the vendor does
 not document it. (Kubuntu 26.04, BlueZ 5.85, October 2026.)
 
 **Overlays that must not eat input**: a Qt window with

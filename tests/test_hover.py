@@ -46,7 +46,7 @@ hover.DIR = FAKE
 # at a fresh login nothing has run the toggle, so the daemon has to make $XDG_RUNTIME_DIR/tabprec
 # itself or its control pipe never exists and every conf reload is silently dead for the session.
 # watch() with no nodes returns as soon as it has made the pipe, so it is a safe probe.
-hover.wacom_nodes = lambda: []
+hover.tablet_nodes = lambda: []
 hover.watch(hover.read_conf(), None, None)
 FRESH_LOGIN_PIPE = hover.CTL.is_fifo()
 hover.RD.mkdir(parents=True, exist_ok=True)   # the second probe needs the dir whatever the first one found
@@ -105,7 +105,7 @@ class FakeWarper:                         # never the real one: it would move th
 PAD = SCRATCH / "pad.fifo"
 os.mkfifo(PAD)
 NODES = [(str(PAD), "bt", "0360")]        # section X empties it (the tablet goes away), then fills it again
-hover.wacom_nodes = lambda: list(NODES)
+hover.tablet_nodes = lambda: list(NODES)
 
 # the live overlay's pipe, read like the real overlay does (RDWR, no EOF)
 FIFO = hover.FIFO
@@ -535,7 +535,7 @@ os.mkfifo(node_a); os.mkfifo(node_b)
 wa, wb = os.open(node_a, os.O_RDWR), os.open(node_b, os.O_RDWR)
 os.chmod(node_b, 0)
 n_nodes = [(str(node_a), "usb", "0357"), (str(node_b), "usb", "0357")]
-hn.wacom_nodes = lambda: list(n_nodes)
+hn.tablet_nodes = lambda: list(n_nodes)
 threading.Thread(target=lambda: hn.watch(hn.read_conf(), type("F", (), {"up": False, "hide": lambda *a, **k: None})()),
                  daemon=True).start()
 time.sleep(0.5)
@@ -832,6 +832,72 @@ LH_LOG = SCRATCH / "busctl-l.log"
 check("L both readers: KWin's 'b true' = turned, 'b false' or no answer = not; the pen's own node is asked",
       said_back == [(True, True), (False, False), (None, False)]
       and LH_LOG.exists() and LH_LOG.read_text().count(LH_ASK) == 6)
+
+# --- Q: the control pipe has a reader for the helper's whole life. Hardware, 2026-10-29: the Intuos asleep, every Apply
+#        said "pad helper not running" because watch() closed the pipe and cycle() slept with no reader (ENXIO).
+#        A fifth copy; no tablet node at first ---
+hq = importlib.util.module_from_spec(spec_p)
+spec_p.loader.exec_module(hq)
+hq.RESCAN = 0.1
+hq.RD = SCRATCH / "rdq"
+hq.CTL = hq.RD / "hover.ctl"
+hq.heal = lambda: None
+hq.pen_node = lambda: None
+hq.tablet_nodes = lambda: []
+q_reads, q_marks, q_watches = [], [], []
+_q_conf, _q_watch = hq.read_conf, hq.watch
+hq.read_conf = lambda: (q_reads.append(1), _q_conf())[1]
+hq.watch = lambda *a: (q_watches.append(1), _q_watch(*a))[1]
+hq.log = lambda m: q_marks.append(len(q_reads)) if "usb report" in m else None
+q_follower = type("F", (), {"up": False, "hide": lambda *a, **k: None})()
+q_stop = threading.Event()
+
+
+def q_daemon():
+    gone = hq.Absence()
+    getattr(hq, "open_ctl", lambda: None)()    # main() does this before its loop
+    while not q_stop.is_set():
+        hq.cycle(q_follower, None, gone, rescan=0.1)
+
+
+def q_poke():
+    try:
+        fd = os.open(hq.CTL, os.O_WRONLY | os.O_NONBLOCK)   # poke_daemon's own open: ENXIO without a reader
+    except OSError:
+        return False
+    os.write(fd, b"reload\n")
+    os.close(fd)
+    return True
+
+
+threading.Thread(target=q_daemon, daemon=True).start()
+time.sleep(0.4)
+q_ok = []
+for _ in range(10):
+    q_ok.append(q_poke())
+    time.sleep(0.07)
+check("Q no tablet node: all 10 pokes over 0.7 s are accepted (the Center never says 'helper down')", all(q_ok))
+check("Q no tablet node: the helper rescans, it does not spin", 3 <= len(q_watches) < 20)
+time.sleep(0.25)
+check("Q no tablet node: pokes made meanwhile are drained, none pile up",
+      getattr(hq, "CTL_FD", None) is not None and not select.select([hq.CTL_FD], [], [], 0)[0])
+q_poke()
+node_q = SCRATCH / "q_node.fifo"
+os.mkfifo(node_q)
+wq = os.open(node_q, os.O_RDWR)
+hq.tablet_nodes = lambda: [(str(node_q), "usb", "0357")]
+time.sleep(0.5)
+check("Q a poke made while absent, then the tablet appears: one normal start", len(q_marks) == 1)
+check("Q ...and no stale reload follows it", len(q_marks) == 1 and len(q_reads) == q_marks[0])
+q_poke()
+time.sleep(0.3)
+check("Q the pipe still reloads the conf while the tablet is here", q_marks and len(q_reads) == q_marks[0] + 1)
+hq.tablet_nodes = lambda: []
+time.sleep(0.3)
+q_stop.set()
+check("Q the tablet gone again: the pipe is still held and answers", q_poke())
+time.sleep(0.2)
+os.close(wq)
 
 print(f"failures: {fails}")
 os.close(writer)
